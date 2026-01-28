@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from readability import Document
 
 from doc_retrieval.config import ExtractorConfig
+from doc_retrieval.extractor.api_schema import is_api_doc_page
 
 
 class ExtractedContent(BaseModel):
@@ -29,6 +30,14 @@ class ContentExtractor:
         """Extract main content from HTML."""
         if not html or len(html.strip()) == 0:
             return None
+
+        # For API doc pages, use soup extraction to preserve schema structure
+        # (trafilatura strips field names and type info from API schemas)
+        if is_api_doc_page(url, html):
+            content = self._extract_with_soup(html)
+            if content and content.text and len(content.text) >= self.config.min_content_length:
+                content = self._clean_content(content)
+                return content
 
         # Try trafilatura first (best for articles/docs)
         content = self._extract_with_trafilatura(html, url)

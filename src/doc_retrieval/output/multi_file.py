@@ -1,7 +1,6 @@
 """Multi-file output writer."""
 
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 
 import aiofiles
@@ -79,7 +78,8 @@ class MultiFileOutput:
         index_path = self.output_dir / "index.md"
 
         parts = []
-        parts.append(f"# {site_info.title or 'Documentation'}")
+        title = site_info.title or self._site_name_from_url(site_info.base_url)
+        parts.append(f"# {title}")
         parts.append("")
         parts.append(f"> Extracted from {site_info.base_url}")
         parts.append(f"> Extracted on: {site_info.extracted_at.isoformat()}")
@@ -97,3 +97,19 @@ class MultiFileOutput:
 
         async with aiofiles.open(index_path, "w", encoding="utf-8") as f:
             await f.write("\n".join(parts))
+
+    @staticmethod
+    def _site_name_from_url(url: str) -> str:
+        """Derive a site name from the base URL."""
+        parsed = urlparse(url)
+        domain = parsed.netloc
+
+        for prefix in ["www.", "docs.", "developers.", "developer.", "documentation.", "help.", "support."]:
+            if domain.startswith(prefix):
+                domain = domain[len(prefix):]
+
+        parts = domain.split(".")
+        if len(parts) >= 2:
+            return parts[0].title() + " Documentation"
+
+        return domain.title() + " Documentation"

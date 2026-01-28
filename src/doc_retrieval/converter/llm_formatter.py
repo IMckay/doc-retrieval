@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel
 
 from doc_retrieval.converter.markdown import html_to_markdown
+from doc_retrieval.extractor.api_schema import extract_api_schema, is_api_doc_page
 from doc_retrieval.extractor.main_content import ExtractedContent
 
 
@@ -41,8 +42,15 @@ class LLMFormatter:
         url: str,
     ) -> FormattedPage:
         """Format a single page with metadata."""
-        # Convert HTML to Markdown
-        markdown = html_to_markdown(content.html)
+        markdown = None
+
+        # For API doc pages, try structured schema extraction first
+        if is_api_doc_page(url, content.html):
+            markdown = extract_api_schema(content.html)
+
+        # Fall back to generic HTML-to-Markdown conversion
+        if not markdown:
+            markdown = html_to_markdown(content.html)
 
         # Clean up the markdown
         markdown = self._clean_markdown(markdown)
@@ -65,9 +73,13 @@ class LLMFormatter:
             parts.append("---")
             parts.append("")
 
+        # Only add title header if markdown doesn't already start with one
         if page.title:
-            parts.append(f"# {page.title}")
-            parts.append("")
+            first_line = page.markdown.lstrip().split("\n", 1)[0]
+            # Skip if markdown already starts with any H1 heading
+            if not first_line.startswith("# "):
+                parts.append(f"# {page.title}")
+                parts.append("")
 
         parts.append(page.markdown)
 
@@ -125,10 +137,27 @@ class LLMFormatter:
 
     def _clean_markdown(self, markdown: str) -> str:
         """Clean up markdown content."""
+        # Remove zero-width spaces, joiners, and BOM
+        markdown = re.sub(r"[\u200B\u200C\u200D\uFEFF]", "", markdown)
+
+        # Remove documentation emoji icons (Docusaurus page icons, etc.)
+        markdown = re.sub(
+            r"[\U0001F4C4\U0001F4C1\U0001F4C2\U0001F517\U0001F4DD\U0001F527\U0001F4A1\U0001F4CC]\uFE0F?",
+            "",
+            markdown,
+        )
+
+        # Remove empty/broken markdown links like [](url) or links with only whitespace
+        markdown = re.sub(r"\[\s*\]\([^)]+\)", "", markdown)
+
+        # Collapse multiple spaces (but not at start of line for indentation)
+        markdown = re.sub(r"([^\n]) {2,}", r"\1 ", markdown)
+
+        # Collapse excessive newlines
         markdown = re.sub(r"\n{3,}", "\n\n", markdown)
 
+        # Fix orphaned heading markers
         markdown = re.sub(r"(^|\n)(#{1,6})\s*\n+", r"\1\2 ", markdown)
-
 
         return markdown.strip()
 

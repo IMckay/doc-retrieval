@@ -125,6 +125,30 @@ SPHINX_PATTERN = SitePattern(
     requires_js=False,
 )
 
+DOCUSAURUS_OPENAPI_PATTERN = SitePattern(
+    name="docusaurus-openapi",
+    description="Docusaurus sites with docusaurus-openapi-docs plugin",
+    content_selectors=[
+        "article .theme-doc-markdown",
+        "article.markdown",
+        "article",
+    ],
+    remove_selectors=[
+        ".openapi-explorer__request-form",
+        ".openapi-explorer__response-container",
+        ".theme-doc-sidebar-container",
+        ".pagination-nav",
+        ".theme-doc-toc-mobile",
+        ".theme-doc-footer",
+        ".theme-edit-this-page",
+        ".breadcrumbs",
+        '[class*="tocCollapsible"]',
+    ],
+    requires_js=True,
+    wait_selector=".openapi-left-panel__container, article.markdown",
+    wait_time_ms=2000,
+)
+
 VITEPRESS_PATTERN = SitePattern(
     name="vitepress",
     description="VitePress documentation sites",
@@ -151,6 +175,7 @@ class PatternRegistry:
 
     _patterns: dict[str, SitePattern] = {
         "docusaurus": DOCUSAURUS_PATTERN,
+        "docusaurus-openapi": DOCUSAURUS_OPENAPI_PATTERN,
         "gitbook": GITBOOK_PATTERN,
         "readthedocs": READTHEDOCS_PATTERN,
         "mkdocs": MKDOCS_PATTERN,
@@ -184,6 +209,10 @@ class PatternRegistry:
             return cls._patterns.get("readthedocs")
 
         # Check HTML content for framework signatures
+        # Docusaurus OpenAPI must be checked before generic Docusaurus
+        if ("docusaurus" in html_lower or "__docusaurus" in html) and "openapi-schema__property" in html:
+            return cls._patterns.get("docusaurus-openapi")
+
         if "docusaurus" in html_lower or "__docusaurus" in html:
             return cls._patterns.get("docusaurus")
 

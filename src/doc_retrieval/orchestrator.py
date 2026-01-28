@@ -136,7 +136,6 @@ class Orchestrator:
         if result.pages:
             site_info = SiteInfo(
                 base_url=self.config.base_url,
-                title=result.pages[0].title if result.pages else None,
                 total_pages=len(result.pages),
                 extracted_at=datetime.now(),
             )

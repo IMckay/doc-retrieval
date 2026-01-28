@@ -66,6 +66,11 @@ class PlaywrightFetcher(BaseFetcher):
             if self.config.wait_after_load_ms > 0:
                 await asyncio.sleep(self.config.wait_after_load_ms / 1000)
 
+            # Expand all collapsed <details> elements so content is in the DOM
+            await page.evaluate(
+                "document.querySelectorAll('details:not([open])').forEach(d => d.setAttribute('open', ''))"
+            )
+
             html = await page.content()
 
             return FetchResult(
