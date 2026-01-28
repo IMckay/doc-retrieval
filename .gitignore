@@ -42,8 +42,8 @@ htmlcov/
 # Type checking
 .mypy_cache/
 
-# Output
-output/
+# Output (root level only - don't ignore src/doc_retrieval/output/)
+/output/
 
 # OS
 .DS_Store
