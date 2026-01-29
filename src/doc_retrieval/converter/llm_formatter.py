@@ -2,7 +2,6 @@
 
 import re
 from datetime import datetime
-from typing import Optional
 from urllib.parse import urlparse
 
 from pydantic import BaseModel
@@ -16,15 +15,16 @@ class FormattedPage(BaseModel):
     """A page formatted for output."""
 
     url: str
-    title: Optional[str] = None
+    title: str | None = None
     markdown: str
+    api_version: str | None = None
 
 
 class SiteInfo(BaseModel):
     """Information about the documentation site."""
 
     base_url: str
-    title: Optional[str] = None
+    title: str | None = None
     total_pages: int = 0
     extracted_at: datetime = datetime.now()
 
@@ -40,13 +40,24 @@ class LLMFormatter:
         self,
         content: ExtractedContent,
         url: str,
+        raw_html: str | None = None,
     ) -> FormattedPage:
-        """Format a single page with metadata."""
+        """Format a single page with metadata.
+
+        Args:
+            content: Extracted content (post-cleaned HTML).
+            url: Page URL.
+            raw_html: Original fetched HTML before content extraction/cleaning.
+                      Used for API schema detection which needs uncleaned DOM.
+        """
         markdown = None
 
-        # For API doc pages, try structured schema extraction first
-        if is_api_doc_page(url, content.html):
-            markdown = extract_api_schema(content.html)
+        # For API doc pages, try structured schema extraction first.
+        # Use raw_html (pre-cleaning) so _clean_content() empty-element
+        # removal doesn't strip schema containers before detection.
+        api_html = raw_html or content.html
+        if is_api_doc_page(url, api_html):
+            markdown = extract_api_schema(api_html)
 
         # Fall back to generic HTML-to-Markdown conversion
         if not markdown:
@@ -55,10 +66,16 @@ class LLMFormatter:
         # Clean up the markdown
         markdown = self._clean_markdown(markdown)
 
+        # Clean up the title
+        title = self._clean_title(content.title) if content.title else None
+
+        api_version = self._detect_api_version(url, markdown)
+
         return FormattedPage(
             url=url,
-            title=content.title,
+            title=title,
             markdown=markdown,
+            api_version=api_version,
         )
 
     def format_single_page_output(self, page: FormattedPage) -> str:
@@ -70,14 +87,19 @@ class LLMFormatter:
             parts.append(f"source: {page.url}")
             if page.title:
                 parts.append(f"title: {page.title}")
+            if page.api_version:
+                parts.append(f"api_version: {page.api_version}")
             parts.append("---")
             parts.append("")
 
-        # Only add title header if markdown doesn't already start with one
+        # Only add title header if markdown doesn't already contain a matching H1
         if page.title:
-            first_line = page.markdown.lstrip().split("\n", 1)[0]
-            # Skip if markdown already starts with any H1 heading
-            if not first_line.startswith("# "):
+            has_h1 = any(
+                line.strip().lstrip("# ").strip() == page.title
+                for line in page.markdown.split("\n")
+                if line.strip().startswith("# ") and not line.strip().startswith("## ")
+            )
+            if not has_h1:
                 parts.append(f"# {page.title}")
                 parts.append("")
 
@@ -119,15 +141,18 @@ class LLMFormatter:
 
         # Each page
         for page in pages:
-            # Page header comment for navigation
-            parts.append(f"<!-- Page: {page.url} -->")
+            if page.api_version:
+                parts.append(f"<!-- Page: {page.url} | api_version: {page.api_version} -->")
+            else:
+                parts.append(f"<!-- Page: {page.url} -->")
 
-            # Page title
+            # Page title — only add if markdown doesn't already start with this H1
             if page.title:
-                parts.append(f"# {page.title}")
-                parts.append("")
+                md_first_line = page.markdown.lstrip().split("\n", 1)[0].strip()
+                if md_first_line != f"# {page.title}":
+                    parts.append(f"# {page.title}")
+                    parts.append("")
 
-            # Page content
             parts.append(page.markdown)
             parts.append("")
             parts.append("---")
@@ -135,14 +160,34 @@ class LLMFormatter:
 
         return "\n".join(parts)
 
+    @staticmethod
+    def _detect_api_version(url: str, markdown: str) -> str | None:
+        """Detect API version from the URL path or markdown content."""
+        # Check URL for version patterns like /api/v1/, /api/v2/, /api/1.0/
+        url_match = re.search(r"/api/(v?\d+(?:\.\d+)?)/", url, re.IGNORECASE)
+        if url_match:
+            version = url_match.group(1)
+            if not version.startswith("v"):
+                version = f"v{version}"
+            return version
+
+        # Fall back to scanning content for versioned API paths
+        content_match = re.search(
+            r"(?:public_api|/api)/(v\d+)/", markdown, re.IGNORECASE
+        )
+        if content_match:
+            return content_match.group(1)
+
+        return None
+
     def _clean_markdown(self, markdown: str) -> str:
         """Clean up markdown content."""
         # Remove zero-width spaces, joiners, and BOM
         markdown = re.sub(r"[\u200B\u200C\u200D\uFEFF]", "", markdown)
 
-        # Remove documentation emoji icons (Docusaurus page icons, etc.)
+        # Remove documentation emoji icons (Docusaurus page icons, folder emoji, etc.)
         markdown = re.sub(
-            r"[\U0001F4C4\U0001F4C1\U0001F4C2\U0001F517\U0001F4DD\U0001F527\U0001F4A1\U0001F4CC]\uFE0F?",
+            r"[\U0001F300-\U0001F9FF]\uFE0F?",
             "",
             markdown,
         )
@@ -150,23 +195,58 @@ class LLMFormatter:
         # Remove empty/broken markdown links like [](url) or links with only whitespace
         markdown = re.sub(r"\[\s*\]\([^)]+\)", "", markdown)
 
+        # Clean leading whitespace inside link text (e.g. from removed emoji)
+        markdown = re.sub(r"\[\s+", "[", markdown)
+
         # Collapse multiple spaces (but not at start of line for indentation)
         markdown = re.sub(r"([^\n]) {2,}", r"\1 ", markdown)
 
-        # Collapse excessive newlines
         markdown = re.sub(r"\n{3,}", "\n\n", markdown)
+
+        # Ensure space after closing link/image parenthesis before word characters
+        markdown = re.sub(r"(\])\(([^)]*)\)(\w)", r"\1(\2) \3", markdown)
 
         # Fix orphaned heading markers
         markdown = re.sub(r"(^|\n)(#{1,6})\s*\n+", r"\1\2 ", markdown)
 
+        markdown = self._deduplicate_h1(markdown)
+
         return markdown.strip()
+
+    def _deduplicate_h1(self, markdown: str) -> str:
+        """Remove duplicate H1 headings and body paragraphs matching the H1."""
+        lines = markdown.split("\n")
+        h1_text: str | None = None
+        result: list[str] = []
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("# ") and not stripped.startswith("## "):
+                title = stripped[2:].strip()
+                if h1_text is None:
+                    h1_text = title
+                    result.append(line)
+                elif title == h1_text:
+                    continue
+                else:
+                    result.append(line)
+            elif h1_text and stripped == h1_text:
+                # Body paragraph that exactly matches H1 text — skip
+                continue
+            else:
+                result.append(line)
+
+        return "\n".join(result)
+
+    def _clean_title(self, title: str) -> str:
+        """Strip common site name suffixes from page titles."""
+        title = re.sub(r"\s*[|–—-]\s*[^|–—-]+$", "", title)
+        return title.strip()
 
     def _make_anchor(self, title: str) -> str:
         """Create a markdown anchor from a title."""
         anchor = title.lower()
-        # Remove special characters
         anchor = re.sub(r"[^\w\s-]", "", anchor)
-        # Replace spaces with hyphens
         anchor = re.sub(r"\s+", "-", anchor)
         return anchor
 
@@ -175,7 +255,6 @@ class LLMFormatter:
         parsed = urlparse(url)
         domain = parsed.netloc
 
-        # Remove common prefixes
         for prefix in ["www.", "docs.", "documentation.", "help.", "support."]:
             if domain.startswith(prefix):
                 domain = domain[len(prefix):]

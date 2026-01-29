@@ -1,10 +1,10 @@
 """Sitemap-based URL discovery."""
 
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 from urllib.parse import urljoin
 
 import httpx
-from usp.tree import sitemap_tree_for_homepage
+from usp.tree import sitemap_tree_for_homepage  # type: ignore[import-untyped]
 
 from doc_retrieval.config import DiscoveryConfig
 from doc_retrieval.discovery.base import BaseDiscoverer, DiscoveredURL
@@ -46,7 +46,7 @@ class SitemapDiscoverer(BaseDiscoverer):
                     priority=page.priority if page.priority else 0.5,
                 )
 
-        except Exception as e:
+        except Exception:
             # If sitemap fails, try common sitemap locations
             for sitemap_path in ["/sitemap.xml", "/sitemap_index.xml", "/sitemap/"]:
                 try:
@@ -86,6 +86,10 @@ class SitemapDiscoverer(BaseDiscoverer):
                         continue
 
                     priority_elem = url_elem.find("sm:priority", ns)
-                    priority = float(priority_elem.text) if priority_elem is not None else 0.5
+                    priority = (
+                        float(priority_elem.text)
+                        if priority_elem is not None and priority_elem.text
+                        else 0.5
+                    )
 
                     yield DiscoveredURL(url=url, priority=priority)

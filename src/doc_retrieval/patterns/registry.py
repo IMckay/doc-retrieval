@@ -1,6 +1,5 @@
 """Site-specific extraction pattern registry."""
 
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -11,42 +10,44 @@ class SitePattern(BaseModel):
     name: str
     description: str
 
-    # Content selectors (in order of preference)
     content_selectors: list[str] = []
-
-    # Elements to remove
     remove_selectors: list[str] = []
-
-    # URL patterns
     doc_url_patterns: list[str] = []
     exclude_url_patterns: list[str] = []
-
-    # JS rendering requirements
     requires_js: bool = True
-    wait_selector: Optional[str] = None
+    wait_selector: str | None = None
     wait_time_ms: int = 0
+    click_tabs_selector: str | None = None
 
 
-# Built-in patterns for common documentation frameworks
 DOCUSAURUS_PATTERN = SitePattern(
     name="docusaurus",
     description="Docusaurus documentation sites",
     content_selectors=[
         "article.markdown",
         ".docMainContent",
+        'main[class*="docMainContainer"]',
+        "main .col",
         "main .container article",
         '[class*="docItemContainer"]',
     ],
     remove_selectors=[
         ".theme-doc-sidebar-container",
+        '[class*="docSidebarContainer"]',
+        "aside",
+        'nav[aria-label="Main"]',
+        ".navbar",
+        ".theme-doc-breadcrumbs",
         ".pagination-nav",
         ".theme-doc-toc-mobile",
         ".theme-doc-footer",
         ".theme-edit-this-page",
         '[class*="tocCollapsible"]',
+        "footer",
     ],
     requires_js=True,
     wait_selector="article.markdown",
+    click_tabs_selector='.openapi-tabs__code-container [role="tab"]',
 )
 
 GITBOOK_PATTERN = SitePattern(
@@ -131,22 +132,31 @@ DOCUSAURUS_OPENAPI_PATTERN = SitePattern(
     content_selectors=[
         "article .theme-doc-markdown",
         "article.markdown",
+        'main[class*="docMainContainer"]',
+        "main .col",
         "article",
     ],
     remove_selectors=[
         ".openapi-explorer__request-form",
         ".openapi-explorer__response-container",
         ".theme-doc-sidebar-container",
+        '[class*="docSidebarContainer"]',
+        "aside",
+        'nav[aria-label="Main"]',
+        ".navbar",
+        ".theme-doc-breadcrumbs",
         ".pagination-nav",
         ".theme-doc-toc-mobile",
         ".theme-doc-footer",
         ".theme-edit-this-page",
         ".breadcrumbs",
         '[class*="tocCollapsible"]',
+        "footer",
     ],
     requires_js=True,
     wait_selector=".openapi-left-panel__container, article.markdown",
-    wait_time_ms=2000,
+    wait_time_ms=500,
+    click_tabs_selector='.openapi-tabs__code-container [role="tab"]',
 )
 
 VITEPRESS_PATTERN = SitePattern(
@@ -189,7 +199,7 @@ class PatternRegistry:
         cls._patterns[pattern.name] = pattern
 
     @classmethod
-    def get(cls, name: str) -> Optional[SitePattern]:
+    def get(cls, name: str) -> SitePattern | None:
         """Get a pattern by name."""
         return cls._patterns.get(name)
 
@@ -199,19 +209,30 @@ class PatternRegistry:
         return list(cls._patterns.values())
 
     @classmethod
-    def detect(cls, url: str, html: str) -> Optional[SitePattern]:
+    def detect(cls, url: str, html: str) -> SitePattern | None:
         """Auto-detect site type from URL or HTML content."""
         url_lower = url.lower()
         html_lower = html.lower() if html else ""
 
-        # Check URL patterns
         if "readthedocs" in url_lower or ".rtfd." in url_lower:
             return cls._patterns.get("readthedocs")
 
         # Check HTML content for framework signatures
         # Docusaurus OpenAPI must be checked before generic Docusaurus
-        if ("docusaurus" in html_lower or "__docusaurus" in html) and "openapi-schema__property" in html:
-            return cls._patterns.get("docusaurus-openapi")
+        if "docusaurus" in html_lower or "__docusaurus" in html:
+            # Check for OpenAPI plugin markers (rendered content or plugin assets)
+            openapi_markers = [
+                "openapi-schema__property",
+                "openapi-left-panel__container",
+                "openapi-markdown__details",
+                "docusaurus-openapi",
+                "openapi-explorer",
+                # Static HTML markers present even before JS renders
+                "docusaurus-plugin-openapi",
+                "plugin-content-docs-api",
+            ]
+            if any(marker in html for marker in openapi_markers):
+                return cls._patterns.get("docusaurus-openapi")
 
         if "docusaurus" in html_lower or "__docusaurus" in html:
             return cls._patterns.get("docusaurus")

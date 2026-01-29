@@ -1,7 +1,7 @@
 """Manual URL list discovery."""
 
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import AsyncIterator
 
 from doc_retrieval.config import DiscoveryConfig
 from doc_retrieval.discovery.base import BaseDiscoverer, DiscoveredURL
@@ -26,7 +26,7 @@ class ManualDiscoverer(BaseDiscoverer):
         count = 0
         max_pages = self.config.max_pages
 
-        with open(urls_file, "r") as f:
+        with open(urls_file) as f:
             for line in f:
                 url = line.strip()
 

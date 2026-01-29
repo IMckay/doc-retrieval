@@ -1,6 +1,5 @@
 """Simple HTTP fetcher for static pages."""
 
-from typing import Optional
 
 import httpx
 
@@ -13,7 +12,7 @@ class HttpFetcher(BaseFetcher):
 
     def __init__(self, config: FetcherConfig):
         super().__init__(config)
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self):
         """Initialize HTTP client."""
@@ -37,11 +36,18 @@ class HttpFetcher(BaseFetcher):
         try:
             response = await self._client.get(url)
 
+            retry_after: float | None = None
+            if response.status_code == 429:
+                retry_after = self._parse_retry_after(
+                    response.headers.get("retry-after")
+                )
+
             return FetchResult(
                 url=url,
                 final_url=str(response.url),
                 html=response.text,
                 status_code=response.status_code,
+                retry_after=retry_after,
             )
 
         except Exception as e:
