@@ -1,10 +1,11 @@
 """Multi-file output writer."""
 
+import os
+import re
 from pathlib import Path
-from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
-import aiofiles
+import aiofiles  # type: ignore[import-untyped]
 
 from doc_retrieval.converter.llm_formatter import FormattedPage, LLMFormatter, SiteInfo
 
@@ -38,7 +39,7 @@ class MultiFileOutput:
 
             written_files.append((page, filepath))
 
-        # Write index file
+        await self._rewrite_internal_links(written_files)
         await self._write_index(written_files, site_info)
 
         return self.output_dir
@@ -46,9 +47,6 @@ class MultiFileOutput:
     def _get_filepath(self, url: str, base_url: str) -> Path:
         """Convert a URL to a file path."""
         parsed = urlparse(url)
-        base_parsed = urlparse(base_url)
-
-        # Get path relative to base
         path = parsed.path.strip("/")
 
         if not path:
@@ -59,12 +57,10 @@ class MultiFileOutput:
             if path.endswith(ext):
                 path = path[:-len(ext)]
 
-        # Replace problematic characters
         path = path.replace(":", "_").replace("?", "_").replace("*", "_")
         path = path.replace("<", "_").replace(">", "_").replace("|", "_")
         path = path.replace('"', "_")
 
-        # Ensure .md extension
         if not path.endswith(".md"):
             path = path + ".md"
 
@@ -79,7 +75,8 @@ class MultiFileOutput:
         index_path = self.output_dir / "index.md"
 
         parts = []
-        parts.append(f"# {site_info.title or 'Documentation'}")
+        title = site_info.title or self._site_name_from_url(site_info.base_url)
+        parts.append(f"# {title}")
         parts.append("")
         parts.append(f"> Extracted from {site_info.base_url}")
         parts.append(f"> Extracted on: {site_info.extracted_at.isoformat()}")
@@ -97,3 +94,85 @@ class MultiFileOutput:
 
         async with aiofiles.open(index_path, "w", encoding="utf-8") as f:
             await f.write("\n".join(parts))
+
+    async def _rewrite_internal_links(
+        self, written_files: list[tuple[FormattedPage, Path]]
+    ) -> None:
+        """Rewrite markdown links that point to other extracted pages."""
+        url_to_path: dict[str, Path] = {}
+        for page, filepath in written_files:
+            url_to_path[self._normalize_url_for_matching(page.url)] = filepath
+
+        link_pattern = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
+
+        for page, filepath in written_files:
+            async with aiofiles.open(filepath, encoding="utf-8") as f:
+                content = await f.read()
+
+            page_base_url = page.url
+            modified = False
+
+            def replace_link(match: re.Match[str]) -> str:
+                nonlocal modified
+                text = match.group(1)
+                href = match.group(2)
+
+                if href.startswith(("#", "mailto:", "tel:")):
+                    return match.group(0)
+
+                resolved = urljoin(page_base_url, href)
+                resolved_no_frag = resolved.split("#")[0]
+                fragment = ""
+                if "#" in resolved:
+                    fragment = "#" + resolved.split("#", 1)[1]
+
+                normalized = self._normalize_url_for_matching(resolved_no_frag)
+
+                page_domain = urlparse(page_base_url).netloc
+                resolved_domain = urlparse(resolved_no_frag).netloc
+                if resolved_domain and resolved_domain != page_domain:
+                    return match.group(0)
+
+                if normalized in url_to_path:
+                    target_path = url_to_path[normalized]
+                    rel = Path(os.path.relpath(target_path, filepath.parent))
+                    modified = True
+                    return f"[{text}]({rel}{fragment})"
+
+                return match.group(0)
+
+            new_content = link_pattern.sub(replace_link, content)
+
+            if modified:
+                async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
+                    await f.write(new_content)
+
+    @staticmethod
+    def _normalize_url_for_matching(url: str) -> str:
+        """Normalize a URL for matching purposes (strip trailing slash, fragments, query)."""
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/")
+        for ext in (".html", ".htm", ".php", ".asp", ".aspx"):
+            if path.endswith(ext):
+                path = path[: -len(ext)]
+        return f"{parsed.scheme}://{parsed.netloc}{path}".lower()
+
+    @staticmethod
+    def _site_name_from_url(url: str) -> str:
+        """Derive a site name from the base URL."""
+        parsed = urlparse(url)
+        domain = parsed.netloc
+
+        domain_prefixes = [
+            "www.", "docs.", "developers.", "developer.",
+            "documentation.", "help.", "support.",
+        ]
+        for prefix in domain_prefixes:
+            if domain.startswith(prefix):
+                domain = domain[len(prefix):]
+
+        parts = domain.split(".")
+        if len(parts) >= 2:
+            return parts[0].title() + " Documentation"
+
+        return domain.title() + " Documentation"

@@ -39,11 +39,16 @@ htmlcov/
 .tox/
 .nox/
 
-# Type checking
+# Linting / Type checking
 .mypy_cache/
+.ruff_cache/
 
 # Output (root level only - don't ignore src/doc_retrieval/output/)
 /output/
+
+# doc-retrieval runtime artifacts
+.failed-urls.txt
+golden_urls.txt
 
 # OS
 .DS_Store
@@ -51,3 +56,5 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/
+CLAUDE.md
+

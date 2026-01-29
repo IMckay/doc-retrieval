@@ -1,6 +1,6 @@
 """Recursive crawler-based URL discovery."""
 
-from typing import AsyncIterator, Set
+from collections.abc import AsyncIterator
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -16,7 +16,7 @@ class CrawlerDiscoverer(BaseDiscoverer):
 
     def __init__(self, base_url: str, config: DiscoveryConfig):
         super().__init__(base_url, config)
-        self._visited: Set[str] = set()
+        self._visited: set[str] = set()
 
     async def discover(self) -> AsyncIterator[DiscoveredURL]:
         """Crawl the site starting from base_url."""
@@ -51,14 +51,16 @@ class CrawlerDiscoverer(BaseDiscoverer):
                     continue
 
                 count += 1
-                yield DiscoveredURL(url=url, depth=depth)
+                yield DiscoveredURL(url=normalized, depth=depth)
 
-                # Fetch page and extract links
                 try:
                     links = await self._extract_links(client, url)
                     for link in links:
                         link_normalized = normalize_url(link)
-                        if link_normalized not in self._visited and is_same_domain(link, self.base_url):
+                        if (
+                            link_normalized not in self._visited
+                            and is_same_domain(link, self.base_url)
+                        ):
                             queue.append((link, depth + 1))
                 except Exception:
                     continue
@@ -77,6 +79,8 @@ class CrawlerDiscoverer(BaseDiscoverer):
 
             for a in soup.find_all("a", href=True):
                 href = a["href"]
+                if isinstance(href, list):
+                    href = href[0]
                 absolute = urljoin(final_url, href)
                 parsed = urlparse(absolute)
                 clean_url = parsed._replace(fragment="").geturl()

@@ -2,10 +2,11 @@
 
 import asyncio
 from pathlib import Path
-from typing import Optional
+from urllib.parse import urlparse as _urlparse
 
 import typer
 from rich.console import Console
+from rich.prompt import Confirm as _Confirm
 from rich.table import Table
 
 from doc_retrieval import __version__
@@ -81,19 +82,19 @@ def extract(
         "-d",
         help="Discovery method: 'sitemap', 'crawl', or 'manual'",
     ),
-    urls_file: Optional[Path] = typer.Option(
+    urls_file: Path | None = typer.Option(
         None,
         "--urls-file",
         "-f",
         help="File containing URLs (one per line) for manual discovery mode",
     ),
-    include_pattern: Optional[str] = typer.Option(
+    include_pattern: str | None = typer.Option(
         None,
         "--include",
         "-i",
         help="Regex pattern for URLs to include",
     ),
-    exclude_pattern: Optional[str] = typer.Option(
+    exclude_pattern: str | None = typer.Option(
         None,
         "--exclude",
         "-e",
@@ -119,7 +120,7 @@ def extract(
         "--js/--no-js",
         help="Enable/disable JavaScript rendering",
     ),
-    pattern: Optional[str] = typer.Option(
+    pattern: str | None = typer.Option(
         None,
         "--pattern",
         "-p",
@@ -130,6 +131,17 @@ def extract(
         "--verbose",
         "-v",
         help="Enable verbose output",
+    ),
+    config_file: Path | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="TOML config file",
+    ),
+    skip_urls: Path | None = typer.Option(
+        None,
+        "--skip-urls",
+        help="File with URLs to skip (one per line)",
     ),
 ):
     """
@@ -150,7 +162,6 @@ def extract(
 
         doc-retrieval extract https://docs.example.com -N --pattern docusaurus
     """
-    # Interactive mode
     if interactive:
         try:
             extractor = InteractiveExtractor(console)
@@ -158,6 +169,11 @@ def extract(
             if config:
                 orchestrator = Orchestrator(config, console)
                 asyncio.run(orchestrator.run())
+                if _Confirm.ask("Save config for reuse?", default=False):
+                    domain = _urlparse(url).netloc.replace(".", "-")
+                    toml_path = Path(f"{domain}.toml")
+                    toml_path.write_text(config.to_toml())
+                    console.print(f"[green]Config saved to {toml_path}[/green]")
             else:
                 console.print("[yellow]Extraction cancelled.[/yellow]")
                 raise typer.Exit(0)
@@ -170,52 +186,64 @@ def extract(
                 console.print_exception()
             raise typer.Exit(1)
         return
-    # Validate mode
-    try:
-        output_mode = OutputMode(mode)
-    except ValueError:
-        console.print(f"[red]Invalid mode: {mode}. Use 'single' or 'multi'.[/red]")
-        raise typer.Exit(1)
 
-    # Validate discovery
-    try:
-        discovery_mode = DiscoveryMode(discovery)
-    except ValueError:
-        console.print(f"[red]Invalid discovery: {discovery}. Use 'sitemap', 'crawl', or 'manual'.[/red]")
-        raise typer.Exit(1)
+    if config_file:
+        try:
+            config = AppConfig.from_toml(config_file)
+            config.base_url = url
+            if skip_urls:
+                config.skip_urls = skip_urls
+            if verbose:
+                config.verbose = True
+        except Exception as e:
+            console.print(f"[red]Error loading config: {e}[/red]")
+            raise typer.Exit(1)
+    else:
+        try:
+            output_mode = OutputMode(mode)
+        except ValueError:
+            console.print(f"[red]Invalid mode: {mode}. Use 'single' or 'multi'.[/red]")
+            raise typer.Exit(1)
 
-    # Check manual mode requirements
-    if discovery_mode == DiscoveryMode.MANUAL and not urls_file:
-        console.print("[red]--urls-file is required for manual discovery mode.[/red]")
-        raise typer.Exit(1)
+        try:
+            discovery_mode = DiscoveryMode(discovery)
+        except ValueError:
+            console.print(
+                f"[red]Invalid discovery: {discovery}."
+                f" Use 'sitemap', 'crawl', or 'manual'.[/red]"
+            )
+            raise typer.Exit(1)
 
-    # Build config
-    config = AppConfig(
-        base_url=url,
-        discovery=DiscoveryConfig(
-            mode=discovery_mode,
-            max_depth=max_depth,
-            max_pages=max_pages,
-            include_pattern=include_pattern,
-            exclude_pattern=exclude_pattern,
-            urls_file=urls_file,
-        ),
-        fetcher=FetcherConfig(
-            use_js=js,
-        ),
-        extractor=ExtractorConfig(),
-        output=OutputConfig(
-            mode=output_mode,
-            path=output,
-        ),
-        rate_limit=RateLimitConfig(
-            delay_seconds=delay,
-        ),
-        pattern=pattern,
-        verbose=verbose,
-    )
+        if discovery_mode == DiscoveryMode.MANUAL and not urls_file:
+            console.print("[red]--urls-file is required for manual discovery mode.[/red]")
+            raise typer.Exit(1)
 
-    # Run extraction
+        config = AppConfig(
+            base_url=url,
+            discovery=DiscoveryConfig(
+                mode=discovery_mode,
+                max_depth=max_depth,
+                max_pages=max_pages,
+                include_pattern=include_pattern,
+                exclude_pattern=exclude_pattern,
+                urls_file=urls_file,
+            ),
+            fetcher=FetcherConfig(
+                use_js=js,
+            ),
+            extractor=ExtractorConfig(),
+            output=OutputConfig(
+                mode=output_mode,
+                path=output,
+            ),
+            rate_limit=RateLimitConfig(
+                delay_seconds=delay,
+            ),
+            pattern=pattern,
+            verbose=verbose,
+            skip_urls=skip_urls,
+        )
+
     orchestrator = Orchestrator(config, console)
 
     try:

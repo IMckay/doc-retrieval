@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-import aiofiles
+import aiofiles  # type: ignore[import-untyped]
 
 from doc_retrieval.converter.llm_formatter import FormattedPage, LLMFormatter, SiteInfo
 
@@ -24,17 +24,13 @@ class SingleFileOutput:
 
     async def write(self, pages: list[FormattedPage], site_info: SiteInfo) -> Path:
         """Write all pages to a single file."""
-        # Ensure parent directory exists
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Ensure .md extension
         if self.output_path.suffix != ".md":
             self.output_path = self.output_path.with_suffix(".md")
 
-        # Format combined content
         content = self.formatter.format_combined_output(pages, site_info)
 
-        # Write to file
         async with aiofiles.open(self.output_path, "w", encoding="utf-8") as f:
             await f.write(content)
 
