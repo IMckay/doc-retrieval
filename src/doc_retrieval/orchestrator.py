@@ -855,11 +855,12 @@ class Orchestrator:
 
                 # Check HTTP cache first
                 cache_hit = False
+                entry = None
                 if self._cache:
                     entry, cached_html = self._cache.get(url)
-                    if cached_html is not None:
+                    if entry is not None and cached_html is not None:
                         fetch_result = self._cache.make_cached_result(
-                            url, entry, cached_html  # type: ignore[arg-type]
+                            url, entry, cached_html
                         )
                         cache_hit = True
 
@@ -868,14 +869,33 @@ class Orchestrator:
                     if cached_probe and url == cached_probe.url:
                         fetch_result = cached_probe
                     else:
+                        cond_headers: dict[str, str] | None = None
+                        if self._cache and entry is not None:
+                            cond_headers = self._cache.conditional_headers(entry) or None
+
                         fetch_result = await fetcher.fetch_with_retry(
                             url,
                             self.config.rate_limit.max_retries,
                             self.config.rate_limit.retry_base_delay,
+                            extra_headers=cond_headers,
                         )
 
+                        # Reuse cached HTML on 304 Not Modified
+                        if (
+                            fetch_result.status_code == 304
+                            and self._cache
+                            and entry is not None
+                        ):
+                            reuse_html = self._cache.read_cached_html(url)
+                            if reuse_html is not None:
+                                fetch_result = self._cache.make_cached_result(
+                                    url, entry, reuse_html
+                                )
+                                self._cache.put(url, fetch_result)
+                                cache_hit = True
+
                     # Store successful responses in cache
-                    if self._cache and fetch_result.success:
+                    if self._cache and fetch_result.success and not cache_hit:
                         self._cache.put(url, fetch_result)
 
                 timing.fetch_end = time.monotonic()
@@ -1186,11 +1206,13 @@ class Orchestrator:
                 max_tokens=chunk_cfg.max_tokens,
                 overlap_tokens=chunk_cfg.overlap_tokens,
             )
-        else:
+        elif mode == OutputMode.MULTI:
             writer = MultiFileOutput(
                 path,
                 include_metadata=self.config.output.include_metadata,
             )
+        else:
+            raise ValueError(f"Unknown output mode: {mode}")
 
         return await writer.write(pages, site_info)
 

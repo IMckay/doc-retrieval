@@ -60,8 +60,10 @@ class ContentExtractor:
         if content:
             content = self._clean_content(content)
             content.extraction_method = method
+            return content
 
-        return content
+        logger.warning("All extraction methods failed for %s", url)
+        return None
 
     def _pre_clean_html(self, html: str) -> str:
         """Remove navigation, sidebar, and footer elements before extraction.

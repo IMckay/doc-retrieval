@@ -54,9 +54,18 @@ class Pipeline:
     async def run_pre_fetch(self, url: str) -> str | None:
         """Run pre_fetch hooks. Returns modified URL or None to skip."""
         for hook in self._hooks[HookPoint.PRE_FETCH]:
-            result = _call_hook(hook, url)
-            if asyncio.iscoroutine(result):
-                result = await result
+            try:
+                result = _call_hook(hook, url)
+                if asyncio.iscoroutine(result):
+                    result = await result
+            except Exception as e:
+                logger.warning(
+                    "Hook %s failed at %s: %s",
+                    getattr(hook, "__name__", repr(hook)),
+                    HookPoint.PRE_FETCH.value,
+                    e,
+                )
+                continue
             if result is None:
                 return None
             url = result
@@ -65,45 +74,90 @@ class Pipeline:
     async def run_post_fetch(self, url: str, html: str) -> str:
         """Run post_fetch hooks. Returns modified HTML."""
         for hook in self._hooks[HookPoint.POST_FETCH]:
-            result = _call_hook(hook, url, html)
-            if asyncio.iscoroutine(result):
-                result = await result
+            try:
+                result = _call_hook(hook, url, html)
+                if asyncio.iscoroutine(result):
+                    result = await result
+            except Exception as e:
+                logger.warning(
+                    "Hook %s failed at %s: %s",
+                    getattr(hook, "__name__", repr(hook)),
+                    HookPoint.POST_FETCH.value,
+                    e,
+                )
+                continue
             html = result
         return html
 
     async def run_pre_extract(self, url: str, html: str) -> str:
         """Run pre_extract hooks. Returns modified HTML."""
         for hook in self._hooks[HookPoint.PRE_EXTRACT]:
-            result = _call_hook(hook, url, html)
-            if asyncio.iscoroutine(result):
-                result = await result
+            try:
+                result = _call_hook(hook, url, html)
+                if asyncio.iscoroutine(result):
+                    result = await result
+            except Exception as e:
+                logger.warning(
+                    "Hook %s failed at %s: %s",
+                    getattr(hook, "__name__", repr(hook)),
+                    HookPoint.PRE_EXTRACT.value,
+                    e,
+                )
+                continue
             html = result
         return html
 
     async def run_post_extract(self, url: str, content: Any) -> Any:
         """Run post_extract hooks. Returns modified ExtractedContent."""
         for hook in self._hooks[HookPoint.POST_EXTRACT]:
-            result = _call_hook(hook, url, content)
-            if asyncio.iscoroutine(result):
-                result = await result
+            try:
+                result = _call_hook(hook, url, content)
+                if asyncio.iscoroutine(result):
+                    result = await result
+            except Exception as e:
+                logger.warning(
+                    "Hook %s failed at %s: %s",
+                    getattr(hook, "__name__", repr(hook)),
+                    HookPoint.POST_EXTRACT.value,
+                    e,
+                )
+                continue
             content = result
         return content
 
     async def run_pre_convert(self, url: str, content: Any) -> Any:
         """Run pre_convert hooks. Returns modified ExtractedContent."""
         for hook in self._hooks[HookPoint.PRE_CONVERT]:
-            result = _call_hook(hook, url, content)
-            if asyncio.iscoroutine(result):
-                result = await result
+            try:
+                result = _call_hook(hook, url, content)
+                if asyncio.iscoroutine(result):
+                    result = await result
+            except Exception as e:
+                logger.warning(
+                    "Hook %s failed at %s: %s",
+                    getattr(hook, "__name__", repr(hook)),
+                    HookPoint.PRE_CONVERT.value,
+                    e,
+                )
+                continue
             content = result
         return content
 
     async def run_post_convert(self, url: str, page: Any) -> Any:
         """Run post_convert hooks. Returns modified FormattedPage."""
         for hook in self._hooks[HookPoint.POST_CONVERT]:
-            result = _call_hook(hook, url, page)
-            if asyncio.iscoroutine(result):
-                result = await result
+            try:
+                result = _call_hook(hook, url, page)
+                if asyncio.iscoroutine(result):
+                    result = await result
+            except Exception as e:
+                logger.warning(
+                    "Hook %s failed at %s: %s",
+                    getattr(hook, "__name__", repr(hook)),
+                    HookPoint.POST_CONVERT.value,
+                    e,
+                )
+                continue
             page = result
         return page
 

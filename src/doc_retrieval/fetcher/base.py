@@ -38,17 +38,23 @@ class BaseFetcher(ABC):
         self.auth = auth or AuthConfig()
 
     @abstractmethod
-    async def fetch(self, url: str) -> FetchResult:
+    async def fetch(
+        self, url: str, extra_headers: dict[str, str] | None = None
+    ) -> FetchResult:
         """Fetch a page and return its HTML content."""
         pass
 
     async def fetch_with_retry(
-        self, url: str, max_retries: int = 3, base_delay: float = 1.0
+        self,
+        url: str,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        extra_headers: dict[str, str] | None = None,
     ) -> FetchResult:
         """Fetch with exponential backoff on transient errors."""
         result = FetchResult(url=url, final_url=url, html="", status_code=0, error="no attempts")
         for attempt in range(max_retries + 1):
-            result = await self.fetch(url)
+            result = await self.fetch(url, extra_headers=extra_headers)
             result.attempts = attempt + 1
             if result.success:
                 return result

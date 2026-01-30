@@ -141,6 +141,14 @@ class ResponseCache:
             encoding="utf-8",
         )
 
+    def read_cached_html(self, url: str) -> str | None:
+        """Read cached HTML for a URL, regardless of TTL."""
+        url_hash = self._url_hash(url)
+        html_path = self._html_path(url_hash)
+        if html_path.exists():
+            return html_path.read_text(encoding="utf-8")
+        return None
+
     def make_cached_result(self, url: str, entry: CacheEntry, html: str) -> FetchResult:
         """Create a FetchResult from cached data."""
         return FetchResult(

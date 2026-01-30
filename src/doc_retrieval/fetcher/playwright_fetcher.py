@@ -21,6 +21,7 @@ class PlaywrightFetcher(BaseFetcher):
         self._context: BrowserContext | None = None
         self._page_pool: asyncio.Queue | None = None
         self._pool_size: int = 0
+        self._pending_cookies: dict[str, str] = {}
 
     async def __aenter__(self):
         """Initialize Playwright browser and pre-create page pool."""
@@ -40,10 +41,11 @@ class PlaywrightFetcher(BaseFetcher):
 
             self._pending_cookies = self._build_cookies()
             self._page_pool = asyncio.Queue()
+            self._pool_size = 0
             for _ in range(self.config.page_pool_size):
                 page = await self._context.new_page()
                 await self._page_pool.put(page)
-            self._pool_size = self.config.page_pool_size
+                self._pool_size += 1
         except Exception:
             await self.__aexit__(None, None, None)
             raise
@@ -65,16 +67,31 @@ class PlaywrightFetcher(BaseFetcher):
         if self._playwright:
             await self._playwright.stop()
 
-    async def fetch(self, url: str) -> FetchResult:
+    async def fetch(self, url: str, extra_headers: dict[str, str] | None = None) -> FetchResult:
         """Fetch a page with JavaScript rendering using pooled pages."""
         if not self._context or not self._page_pool:
             raise RuntimeError("Fetcher not initialized. Use 'async with' context manager.")
 
-        page = await self._page_pool.get()
+        try:
+            page = await asyncio.wait_for(self._page_pool.get(), timeout=30.0)
+        except asyncio.TimeoutError:
+            return FetchResult(
+                url=url,
+                final_url=url,
+                html="",
+                status_code=0,
+                error="Page pool exhausted — no available browser pages",
+            )
         try:
             # Set cookies for this URL's domain on first use
             if self._pending_cookies:
                 await self._inject_cookies(url)
+
+            if extra_headers:
+                await page.set_extra_http_headers({
+                    **(dict(self.auth.headers) if self.auth.headers else {}),
+                    **extra_headers,
+                })
 
             response = await page.goto(
                 url,
@@ -175,7 +192,7 @@ class PlaywrightFetcher(BaseFetcher):
                     exc_info=True,
                 )
                 if self._pool_size <= 0:
-                    raise RuntimeError(
+                    logger.critical(
                         "Playwright page pool is empty — all pages lost"
                     )
 
