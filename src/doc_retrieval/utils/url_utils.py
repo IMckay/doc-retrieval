@@ -38,6 +38,10 @@ def url_to_filename(url: str, base_url: str) -> str:
     if not path:
         path = "index"
 
+    # Sanitize path traversal sequences
+    parts = [p for p in path.split("/") if p and p != ".."]
+    path = "/".join(parts)
+
     path = re.sub(r"[<>:\"|?*]", "_", path)
 
     if not path.endswith(".md"):

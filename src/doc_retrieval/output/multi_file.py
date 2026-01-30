@@ -64,7 +64,13 @@ class MultiFileOutput:
         if not path.endswith(".md"):
             path = path + ".md"
 
-        return self.output_dir / path
+        result = (self.output_dir / path).resolve()
+        if not result.is_relative_to(self.output_dir.resolve()):
+            # Sanitize path traversal attempts by flattening to a safe filename
+            safe = path.replace("..", "_").replace("/", "_")
+            result = (self.output_dir / safe).resolve()
+
+        return result
 
     async def _write_index(
         self,

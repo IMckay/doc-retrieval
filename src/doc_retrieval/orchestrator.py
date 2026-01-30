@@ -1,6 +1,7 @@
 """Main orchestrator that coordinates the extraction pipeline."""
 
 import asyncio
+import logging
 import re
 import time
 from collections import Counter
@@ -45,6 +46,8 @@ from doc_retrieval.output.single_file import SingleFileOutput
 from doc_retrieval.patterns import PatternRegistry, SitePattern
 from doc_retrieval.utils.rate_limiter import RateLimiter
 from doc_retrieval.utils.url_utils import normalize_url
+
+logger = logging.getLogger(__name__)
 
 
 class PageStatus(str, Enum):
@@ -253,6 +256,7 @@ class Orchestrator:
                                     f" {pattern.name}[/blue]"
                                 )
                 except Exception:
+                    logger.debug("Pattern auto-detection probe failed", exc_info=True)
                     probe_result = None
 
             progress = Progress(
@@ -726,7 +730,7 @@ class Orchestrator:
         return None
 
     def _apply_pattern(self, pattern: SitePattern) -> None:
-        """Apply pattern settings to config."""
+        """Apply pattern settings to config (creates new sub-config objects)."""
         parts: list[str] = []
         if pattern.content_selectors:
             parts.append(f"{len(pattern.content_selectors)} content selectors")
@@ -738,24 +742,34 @@ class Orchestrator:
             self.console.print(
                 f"[blue]Applied pattern '{pattern.name}': {', '.join(parts)}[/blue]"
             )
+
+        extractor_updates: dict = {}
         if pattern.content_selectors:
-            self.config.extractor.content_selectors = (
+            extractor_updates["content_selectors"] = (
                 pattern.content_selectors + self.config.extractor.content_selectors
             )
         if pattern.remove_selectors:
-            self.config.extractor.remove_selectors = (
+            extractor_updates["remove_selectors"] = (
                 pattern.remove_selectors + self.config.extractor.remove_selectors
             )
-        # Don't override JS setting if explicitly set to False
-        if pattern.requires_js and self.config.fetcher.use_js:
-            self.config.fetcher.use_js = True
-        # Transfer wait settings so the fetcher waits for the right selector
+        if extractor_updates:
+            self.config.extractor = self.config.extractor.model_copy(
+                update=extractor_updates
+            )
+
+        fetcher_updates: dict = {}
+        if pattern.requires_js:
+            fetcher_updates["use_js"] = True
         if pattern.wait_selector:
-            self.config.fetcher.wait_selector = pattern.wait_selector
+            fetcher_updates["wait_selector"] = pattern.wait_selector
         if pattern.wait_time_ms:
-            self.config.fetcher.wait_time_ms = pattern.wait_time_ms
+            fetcher_updates["wait_time_ms"] = pattern.wait_time_ms
         if pattern.click_tabs_selector:
-            self.config.fetcher.click_tabs_selector = pattern.click_tabs_selector
+            fetcher_updates["click_tabs_selector"] = pattern.click_tabs_selector
+        if fetcher_updates:
+            self.config.fetcher = self.config.fetcher.model_copy(
+                update=fetcher_updates
+            )
 
     def _create_discoverer(self) -> BaseDiscoverer:
         """Create the appropriate discoverer."""

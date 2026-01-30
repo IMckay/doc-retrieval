@@ -2,8 +2,17 @@
 
 import json
 import re
+from dataclasses import dataclass
 
 from bs4 import BeautifulSoup, Tag
+
+
+@dataclass
+class ApiSchemaResult:
+    """Result of structured API schema extraction."""
+
+    markdown: str
+    title: str | None = None
 
 
 def is_api_doc_page(url: str, html: str) -> bool:
@@ -25,7 +34,7 @@ def is_api_doc_page(url: str, html: str) -> bool:
     return False
 
 
-def extract_api_schema(html: str) -> str | None:
+def extract_api_schema(html: str) -> ApiSchemaResult | None:
     """Extract API schema content and format as structured markdown.
 
     Targets docusaurus-openapi-docs plugin HTML structure:
@@ -40,9 +49,11 @@ def extract_api_schema(html: str) -> str | None:
     parts = []
 
     # Extract title
+    title_text: str | None = None
     title_elem = soup.select_one(".openapi__heading") or soup.find("h1")
     if title_elem:
-        parts.append(f"# {title_elem.get_text(strip=True)}")
+        title_text = title_elem.get_text(strip=True)
+        parts.append(f"# {title_text}")
         parts.append("")
 
     # Extract HTTP method and endpoint
@@ -128,7 +139,7 @@ def extract_api_schema(html: str) -> str | None:
     if len(parts) <= 2:
         return None
 
-    return "\n".join(parts)
+    return ApiSchemaResult(markdown="\n".join(parts), title=title_text)
 
 
 def _extract_schema_details(details: Tag) -> str | None:
@@ -430,8 +441,11 @@ def _extract_code_sample(soup: Tag) -> str | None:
             parts.append("")
             extracted_any = True
 
-    # Also check live tab panels (for tabs whose panel is in the DOM)
-    for tab in code_container.select('[role="tab"]'):
+    # Also check live tab panels — only from the first (language-level)
+    # tablist to avoid confusing sub-tabs with language tabs.
+    first_tablist = code_container.select_one('[role="tablist"]')
+    live_tabs = first_tablist.select(':scope > [role="tab"]') if first_tablist else []
+    for tab in live_tabs:
         raw_lang = tab.get_text(strip=True).lower()
         if raw_lang not in allowed_langs:
             continue

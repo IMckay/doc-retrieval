@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from urllib.parse import urlparse
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from doc_retrieval.converter.markdown import html_to_markdown
 from doc_retrieval.extractor.api_schema import extract_api_schema, is_api_doc_page
@@ -26,7 +26,7 @@ class SiteInfo(BaseModel):
     base_url: str
     title: str | None = None
     total_pages: int = 0
-    extracted_at: datetime = datetime.now()
+    extracted_at: datetime = Field(default_factory=datetime.now)
 
 
 class LLMFormatter:
@@ -51,13 +51,17 @@ class LLMFormatter:
                       Used for API schema detection which needs uncleaned DOM.
         """
         markdown = None
+        api_title: str | None = None
 
         # For API doc pages, try structured schema extraction first.
         # Use raw_html (pre-cleaning) so _clean_content() empty-element
         # removal doesn't strip schema containers before detection.
         api_html = raw_html or content.html
         if is_api_doc_page(url, api_html):
-            markdown = extract_api_schema(api_html)
+            schema_result = extract_api_schema(api_html)
+            if schema_result:
+                markdown = schema_result.markdown
+                api_title = schema_result.title
 
         # Fall back to generic HTML-to-Markdown conversion
         if not markdown:
@@ -66,8 +70,9 @@ class LLMFormatter:
         # Clean up the markdown
         markdown = self._clean_markdown(markdown)
 
-        # Clean up the title
-        title = self._clean_title(content.title) if content.title else None
+        # Prefer the API schema title (from .openapi__heading) over the
+        # generic <title> tag which often falls back to the site name.
+        title = api_title or (self._clean_title(content.title) if content.title else None)
 
         api_version = self._detect_api_version(url, markdown)
 
@@ -95,7 +100,7 @@ class LLMFormatter:
         # Only add title header if markdown doesn't already contain a matching H1
         if page.title:
             has_h1 = any(
-                line.strip().lstrip("# ").strip() == page.title
+                line.strip().removeprefix("# ").strip() == page.title
                 for line in page.markdown.split("\n")
                 if line.strip().startswith("# ") and not line.strip().startswith("## ")
             )
@@ -240,7 +245,7 @@ class LLMFormatter:
 
     def _clean_title(self, title: str) -> str:
         """Strip common site name suffixes from page titles."""
-        title = re.sub(r"\s*[|–—-]\s*[^|–—-]+$", "", title)
+        title = re.sub(r"\s*[|–—\-]\s*[^|–—\-]+$", "", title)
         return title.strip()
 
     def _make_anchor(self, title: str) -> str:

@@ -1,5 +1,6 @@
 """Main content extraction from HTML pages."""
 
+import logging
 
 import trafilatura
 from bs4 import BeautifulSoup
@@ -7,6 +8,8 @@ from pydantic import BaseModel
 from readability import Document  # type: ignore[import-untyped]
 
 from doc_retrieval.config import ExtractorConfig
+
+logger = logging.getLogger(__name__)
 
 
 class ExtractedContent(BaseModel):
@@ -104,7 +107,7 @@ class ContentExtractor:
                     text=text,
                 )
         except Exception:
-            pass
+            logger.debug("Trafilatura extraction failed", exc_info=True)
 
         return None
 
@@ -126,7 +129,7 @@ class ContentExtractor:
                     text=text,
                 )
         except Exception:
-            pass
+            logger.debug("Readability extraction failed", exc_info=True)
 
         return None
 
@@ -150,9 +153,7 @@ class ContentExtractor:
             if title_tag:
                 title = title_tag.get_text(strip=True)
 
-            for selector in self.config.remove_selectors:
-                for elem in soup.select(selector):
-                    elem.decompose()
+            # remove_selectors already applied in _pre_clean_html()
 
             main = None
             for selector in self.config.content_selectors:
@@ -189,7 +190,7 @@ class ContentExtractor:
                 text=text,
             )
         except Exception:
-            pass
+            logger.debug("BeautifulSoup extraction failed", exc_info=True)
 
         return None
 

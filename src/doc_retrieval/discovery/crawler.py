@@ -1,5 +1,7 @@
 """Recursive crawler-based URL discovery."""
 
+import logging
+from collections import deque
 from collections.abc import AsyncIterator
 from urllib.parse import urljoin, urlparse
 
@@ -9,6 +11,8 @@ from bs4 import BeautifulSoup
 from doc_retrieval.config import DiscoveryConfig
 from doc_retrieval.discovery.base import BaseDiscoverer, DiscoveredURL
 from doc_retrieval.utils.url_utils import is_doc_url, is_same_domain, normalize_url
+
+logger = logging.getLogger(__name__)
 
 
 class CrawlerDiscoverer(BaseDiscoverer):
@@ -20,7 +24,7 @@ class CrawlerDiscoverer(BaseDiscoverer):
 
     async def discover(self) -> AsyncIterator[DiscoveredURL]:
         """Crawl the site starting from base_url."""
-        queue: list[tuple[str, int]] = [(self.base_url, 0)]
+        queue: deque[tuple[str, int]] = deque([(self.base_url, 0)])
         count = 0
         max_pages = self.config.max_pages
         max_depth = self.config.max_depth
@@ -30,7 +34,7 @@ class CrawlerDiscoverer(BaseDiscoverer):
             timeout=30.0,
         ) as client:
             while queue:
-                url, depth = queue.pop(0)
+                url, depth = queue.popleft()
                 normalized = normalize_url(url)
 
                 if normalized in self._visited:
@@ -63,6 +67,7 @@ class CrawlerDiscoverer(BaseDiscoverer):
                         ):
                             queue.append((link, depth + 1))
                 except Exception:
+                    logger.debug("Failed to extract links from %s", url, exc_info=True)
                     continue
 
     async def _extract_links(self, client: httpx.AsyncClient, url: str) -> list[str]:
@@ -88,4 +93,5 @@ class CrawlerDiscoverer(BaseDiscoverer):
 
             return links
         except Exception:
+            logger.debug("Link extraction failed for %s", url, exc_info=True)
             return []

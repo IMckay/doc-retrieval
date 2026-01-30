@@ -1,5 +1,6 @@
 """Sitemap-based URL discovery."""
 
+import logging
 from collections.abc import AsyncIterator
 from urllib.parse import urljoin
 
@@ -9,6 +10,8 @@ from usp.tree import sitemap_tree_for_homepage  # type: ignore[import-untyped]
 from doc_retrieval.config import DiscoveryConfig
 from doc_retrieval.discovery.base import BaseDiscoverer, DiscoveredURL
 from doc_retrieval.utils.url_utils import is_doc_url
+
+logger = logging.getLogger(__name__)
 
 
 class SitemapDiscoverer(BaseDiscoverer):
@@ -47,6 +50,7 @@ class SitemapDiscoverer(BaseDiscoverer):
                 )
 
         except Exception:
+            logger.debug("Primary sitemap parsing failed", exc_info=True)
             # If sitemap fails, try common sitemap locations
             for sitemap_path in ["/sitemap.xml", "/sitemap_index.xml", "/sitemap/"]:
                 try:
@@ -57,6 +61,7 @@ class SitemapDiscoverer(BaseDiscoverer):
                             return
                     break
                 except Exception:
+                    logger.debug("Fallback sitemap %s failed", sitemap_path, exc_info=True)
                     continue
 
     async def _try_sitemap(
@@ -69,9 +74,9 @@ class SitemapDiscoverer(BaseDiscoverer):
             response = await client.get(sitemap_url, follow_redirects=True)
             response.raise_for_status()
 
-            from xml.etree import ElementTree
+            from defusedxml.ElementTree import fromstring  # type: ignore[import-untyped]
 
-            root = ElementTree.fromstring(response.content)
+            root = fromstring(response.content)
             ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
             for url_elem in root.findall(".//sm:url", ns):
@@ -86,10 +91,13 @@ class SitemapDiscoverer(BaseDiscoverer):
                         continue
 
                     priority_elem = url_elem.find("sm:priority", ns)
-                    priority = (
-                        float(priority_elem.text)
-                        if priority_elem is not None and priority_elem.text
-                        else 0.5
-                    )
+                    priority = 0.5
+                    if priority_elem is not None and priority_elem.text:
+                        try:
+                            priority = float(priority_elem.text)
+                        except ValueError:
+                            logger.debug(
+                                "Non-numeric sitemap priority: %s", priority_elem.text
+                            )
 
                     yield DiscoveredURL(url=url, priority=priority)

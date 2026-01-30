@@ -138,7 +138,16 @@ class MarkdownConverter(BaseMarkdownConverter):
         return ""
 
     def _cell_text(self, cell: Tag) -> str:
-        """Get clean text from a table cell."""
+        """Get clean text from a table cell, preserving list structure."""
+        list_elem = cell.find(["ul", "ol"])
+        if list_elem:
+            items = list_elem.find_all("li")
+            if items:
+                item_texts = [
+                    li.get_text(strip=True).replace("|", "\\|") for li in items
+                ]
+                return "<br>".join(f"- {t}" for t in item_texts if t)
+
         text = cell.get_text(separator=" ", strip=True)
         text = text.replace("\n", " ").replace("|", "\\|")
         return text
