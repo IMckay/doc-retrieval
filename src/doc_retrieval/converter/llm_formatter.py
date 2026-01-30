@@ -18,6 +18,7 @@ class FormattedPage(BaseModel):
     title: str | None = None
     markdown: str
     api_version: str | None = None
+    quality_score: int = 0  # 0-100
 
 
 class SiteInfo(BaseModel):
@@ -76,11 +77,14 @@ class LLMFormatter:
 
         api_version = self._detect_api_version(url, markdown)
 
+        quality = self._score_quality(markdown)
+
         return FormattedPage(
             url=url,
             title=title,
             markdown=markdown,
             api_version=api_version,
+            quality_score=quality,
         )
 
     def format_single_page_output(self, page: FormattedPage) -> str:
@@ -254,6 +258,91 @@ class LLMFormatter:
         anchor = re.sub(r"[^\w\s-]", "", anchor)
         anchor = re.sub(r"\s+", "-", anchor)
         return anchor
+
+    @staticmethod
+    def _score_quality(markdown: str) -> int:
+        """Score content quality from 0-100 based on structural indicators.
+
+        Scoring criteria:
+        - Content length (0-25 points): longer content suggests more substance
+        - Heading structure (0-20 points): presence of headings shows structure
+        - Paragraph structure (0-20 points): multiple paragraphs indicate prose
+        - Code blocks (0-15 points): code examples add value
+        - Links (0-10 points): internal/external references
+        - Lists (0-10 points): structured information
+        """
+        if not markdown:
+            return 0
+
+        score = 0
+        length = len(markdown)
+        lines = markdown.split("\n")
+
+        # Content length: 0-25 points
+        if length >= 10000:
+            score += 25
+        elif length >= 5000:
+            score += 20
+        elif length >= 2000:
+            score += 15
+        elif length >= 500:
+            score += 10
+        elif length >= 100:
+            score += 5
+
+        # Heading structure: 0-20 points
+        heading_count = sum(1 for line in lines if re.match(r"^#{1,6}\s", line))
+        if heading_count >= 5:
+            score += 20
+        elif heading_count >= 3:
+            score += 15
+        elif heading_count >= 1:
+            score += 10
+
+        # Paragraph structure: 0-20 points (count non-empty, non-heading, non-list blocks)
+        paragraphs = re.split(r"\n\n+", markdown)
+        prose_paras = [
+            p for p in paragraphs
+            if p.strip()
+            and not p.strip().startswith("#")
+            and not p.strip().startswith("```")
+            and not p.strip().startswith("- ")
+            and not p.strip().startswith("* ")
+            and len(p.strip()) > 50
+        ]
+        if len(prose_paras) >= 5:
+            score += 20
+        elif len(prose_paras) >= 3:
+            score += 15
+        elif len(prose_paras) >= 1:
+            score += 10
+
+        # Code blocks: 0-15 points
+        code_blocks = markdown.count("```")
+        if code_blocks >= 6:  # 3+ code blocks (open+close pairs)
+            score += 15
+        elif code_blocks >= 2:  # 1+ code blocks
+            score += 10
+        elif code_blocks >= 1:
+            score += 5
+
+        # Links: 0-10 points
+        link_count = len(re.findall(r"\[.+?\]\(.+?\)", markdown))
+        if link_count >= 5:
+            score += 10
+        elif link_count >= 2:
+            score += 7
+        elif link_count >= 1:
+            score += 3
+
+        # Lists: 0-10 points
+        list_items = sum(1 for line in lines if re.match(r"^\s*[-*+]\s", line))
+        if list_items >= 5:
+            score += 10
+        elif list_items >= 2:
+            score += 5
+
+        return min(100, score)
 
     def _extract_site_name(self, url: str) -> str:
         """Extract a site name from URL."""

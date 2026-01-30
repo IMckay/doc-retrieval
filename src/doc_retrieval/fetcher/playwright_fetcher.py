@@ -5,7 +5,7 @@ import logging
 
 from playwright.async_api import Browser, BrowserContext, Playwright, async_playwright
 
-from doc_retrieval.config import FetcherConfig
+from doc_retrieval.config import AuthConfig, FetcherConfig
 from doc_retrieval.fetcher.base import BaseFetcher, FetchResult
 
 logger = logging.getLogger(__name__)
@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 class PlaywrightFetcher(BaseFetcher):
     """Fetch pages using Playwright with JavaScript rendering."""
 
-    def __init__(self, config: FetcherConfig):
-        super().__init__(config)
+    def __init__(self, config: FetcherConfig, auth: AuthConfig | None = None):
+        super().__init__(config, auth)
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
@@ -27,10 +27,18 @@ class PlaywrightFetcher(BaseFetcher):
         self._playwright = await async_playwright().start()
         try:
             self._browser = await self._playwright.chromium.launch(headless=True)
-            self._context = await self._browser.new_context(
-                user_agent=self.config.user_agent,
-                viewport={"width": 1280, "height": 720},
-            )
+
+            # Build context options with auth headers if provided
+            context_kwargs: dict = {
+                "user_agent": self.config.user_agent,
+                "viewport": {"width": 1280, "height": 720},
+            }
+            if self.auth.headers:
+                context_kwargs["extra_http_headers"] = dict(self.auth.headers)
+
+            self._context = await self._browser.new_context(**context_kwargs)
+
+            self._pending_cookies = self._build_cookies()
             self._page_pool = asyncio.Queue()
             for _ in range(self.config.page_pool_size):
                 page = await self._context.new_page()
@@ -64,6 +72,10 @@ class PlaywrightFetcher(BaseFetcher):
 
         page = await self._page_pool.get()
         try:
+            # Set cookies for this URL's domain on first use
+            if self._pending_cookies:
+                await self._inject_cookies(url)
+
             response = await page.goto(
                 url,
                 wait_until="networkidle",
@@ -171,6 +183,31 @@ class PlaywrightFetcher(BaseFetcher):
     def _is_crashed_page(html: str) -> bool:
         """Detect if Docusaurus rendered a React error boundary crash."""
         return "This page crashed" in html
+
+    def _build_cookies(self) -> dict[str, str]:
+        """Combine auth cookies and cookie file into a single dict."""
+        cookies = dict(self.auth.cookies)
+        if self.auth.cookie_file and self.auth.cookie_file.exists():
+            from doc_retrieval.fetcher.http_fetcher import _parse_cookie_file
+
+            cookies.update(_parse_cookie_file(self.auth.cookie_file))
+        return cookies
+
+    async def _inject_cookies(self, url: str) -> None:
+        """Add pending cookies to the browser context for the given URL's origin."""
+        if not self._context or not self._pending_cookies:
+            return
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        pw_cookies = [
+            {"name": name, "value": value, "url": origin}
+            for name, value in self._pending_cookies.items()
+        ]
+        await self._context.add_cookies(pw_cookies)
+        # Only inject once
+        self._pending_cookies = {}
 
     async def _click_through_tabs(self, page) -> None:
         """Click target language tabs and snapshot each panel's code.

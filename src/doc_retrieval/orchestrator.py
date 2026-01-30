@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from rich.console import Console, Group
 from rich.live import Live
+from rich.panel import Panel
 from rich.progress import (
     BarColumn,
     Progress,
@@ -34,6 +35,7 @@ from doc_retrieval.converter.llm_formatter import FormattedPage, LLMFormatter, S
 from doc_retrieval.discovery import (
     BaseDiscoverer,
     CrawlerDiscoverer,
+    JsCrawlerDiscoverer,
     ManualDiscoverer,
     SitemapDiscoverer,
 )
@@ -41,10 +43,18 @@ from doc_retrieval.extractor import ContentExtractor
 from doc_retrieval.extractor.main_content import ExtractedContent
 from doc_retrieval.fetcher import BaseFetcher, HttpFetcher, PlaywrightFetcher
 from doc_retrieval.fetcher.base import FetchResult
+from doc_retrieval.fetcher.cache import ResponseCache
+from doc_retrieval.output.chunked_output import ChunkedOutput
+from doc_retrieval.output.debug_html import DebugHtmlWriter
+from doc_retrieval.output.json_output import JsonlOutput, JsonOutput
+from doc_retrieval.output.metrics import write_metrics
 from doc_retrieval.output.multi_file import MultiFileOutput
 from doc_retrieval.output.single_file import SingleFileOutput
 from doc_retrieval.patterns import PatternRegistry, SitePattern
+from doc_retrieval.pipeline import HookPoint, Pipeline
+from doc_retrieval.state import StateManager
 from doc_retrieval.utils.rate_limiter import RateLimiter
+from doc_retrieval.utils.robots import RobotsChecker
 from doc_retrieval.utils.url_utils import normalize_url
 
 logger = logging.getLogger(__name__)
@@ -162,10 +172,38 @@ class Orchestrator:
             config.rate_limit.max_concurrent,
         )
 
+        # Debug HTML saving
+        self._debug_html: DebugHtmlWriter | None = None
+        if config.save_html:
+            self._debug_html = DebugHtmlWriter(config.output.path.parent)
+
+        # State management for resume
+        self._state_manager: StateManager | None = None
+        if config.resume or config.state_file:
+            state_path = config.state_file or Path(".doc-retrieval-state.json")
+            self._state_manager = StateManager(state_path)
+
+        # HTTP response cache
+        self._cache: ResponseCache | None = None
+        if not config.no_cache:
+            cache_dir = config.cache_dir or Path.home() / ".cache" / "doc-retrieval"
+            self._cache = ResponseCache(cache_dir)
+
+        # Pipeline hooks
+        self._pipeline = Pipeline.from_config(config.hooks) if config.hooks else Pipeline()
+
     async def run(self) -> ExtractionResult:
         """Execute the full extraction pipeline."""
         result = ExtractionResult()
         result.pipeline_start = time.monotonic()
+
+        # Register user-defined custom patterns from config
+        for name, custom in self.config.custom_patterns.items():
+            data = custom.model_dump()
+            data["name"] = name
+            PatternRegistry.register(SitePattern(**data))
+            if self.config.verbose:
+                self.console.print(f"[blue]Registered custom pattern: {name}[/blue]")
 
         # Get explicit site pattern (auto-detection happens after first fetch)
         pattern = self._get_pattern()
@@ -226,12 +264,53 @@ class Orchestrator:
                     f"[dim]Skipped {skipped_count} URLs from skip file[/dim]"
                 )
 
+        # Robots.txt filtering
+        robots: RobotsChecker | None = None
+        if not self.config.ignore_robots:
+            robots = RobotsChecker(
+                user_agent=self.config.fetcher.user_agent,
+            )
+            loaded = await robots.load(self.config.base_url)
+            if loaded:
+                before_robots = len(urls)
+                urls = [u for u in urls if robots.is_allowed(u.url)]
+                blocked = before_robots - len(urls)
+                if blocked:
+                    self.console.print(
+                        f"[dim]Blocked {blocked} URLs by robots.txt[/dim]"
+                    )
+
+        # Resume: load state and skip already-completed URLs
+        if self._state_manager and self.config.resume:
+            run_state = self._state_manager.load(self.config.base_url)
+            completed = run_state.completed_urls
+            if completed:
+                before_resume = len(urls)
+                urls = [u for u in urls if u.url not in completed]
+                resumed_count = before_resume - len(urls)
+                if resumed_count:
+                    self.console.print(
+                        f"[blue]Resuming: skipped {resumed_count}"
+                        f" already-completed pages[/blue]"
+                    )
+        elif self._state_manager:
+            # Not resuming but state file configured — start fresh state
+            self._state_manager.load(self.config.base_url)
+
         result.discovery_duration = time.monotonic() - discovery_start
         disc_rate = len(urls) / result.discovery_duration if result.discovery_duration > 0 else 0
         self.console.print(
             f"[green]Found {len(urls)} pages to extract[/green]"
             f" [dim]({disc_rate:.1f} pages/sec)[/dim]"
         )
+
+        # Dry-run: extract a few sample pages and display results
+        if self.config.dry_run:
+            proceed = await self._run_dry_run(urls, extractor, formatter, pattern)
+            if not proceed:
+                self.console.print("[yellow]Dry run complete — extraction cancelled.[/yellow]")
+                result.pipeline_end = time.monotonic()
+                return result
 
         for discovered in urls:
             result.page_timings.append(PageTiming(url=discovered.url))
@@ -320,21 +399,48 @@ class Orchestrator:
             output_path = await self._write_output(result.pages, site_info)
             result.output_duration = time.monotonic() - output_start
 
-            if self.config.output.mode == OutputMode.SINGLE:
-                size = output_path.stat().st_size
-                self.console.print(
-                    f"[green]Written to {output_path}"
-                    f" ({_format_size(size)}, {len(result.pages)} pages)[/green]"
-                )
-            else:
+            if self.config.output.mode == OutputMode.MULTI:
                 md_files = list(output_path.glob("*.md"))
                 total_size = sum(f.stat().st_size for f in md_files)
                 self.console.print(
                     f"[green]Written to {output_path}/"
                     f" ({len(md_files)} files, {_format_size(total_size)} total)[/green]"
                 )
+            else:
+                size = output_path.stat().st_size
+                self.console.print(
+                    f"[green]Written to {output_path}"
+                    f" ({_format_size(size)}, {len(result.pages)} pages)[/green]"
+                )
 
         result.pipeline_end = time.monotonic()
+
+        # Write metrics JSON
+        if result.pages:
+            metrics_path = write_metrics(
+                output_path=self.config.output.path,
+                pages=result.pages,
+                errors=result.errors,
+                skipped=result.skipped,
+                skipped_categories=result.skipped_categories,
+                timings=result.page_timings,
+                pipeline_start=result.pipeline_start,
+                pipeline_end=result.pipeline_end,
+                discovery_duration=result.discovery_duration,
+                output_duration=result.output_duration,
+                base_url=self.config.base_url,
+                cache_hits=self._cache.hits if self._cache else 0,
+                cache_misses=self._cache.misses if self._cache else 0,
+            )
+            if self.config.verbose:
+                self.console.print(f"[dim]Metrics written to {metrics_path}[/dim]")
+
+        # Finalize state file for resume
+        if self._state_manager:
+            self._state_manager.finalize()
+            self.console.print(
+                f"[dim]State saved to {self._state_manager.state_path}[/dim]"
+            )
 
         self._print_summary(result)
 
@@ -531,6 +637,29 @@ class Orchestrator:
                     "  [yellow]Warning: >30% of pages are tiny — check extraction quality[/yellow]"
                 )
 
+            # Quality score distribution
+            scores = [p.quality_score for p in result.pages]
+            avg_score = sum(scores) // len(scores) if scores else 0
+            low_quality = sum(1 for s in scores if s < 30)
+            medium_quality = sum(1 for s in scores if 30 <= s < 60)
+            high_quality = sum(1 for s in scores if s >= 60)
+            self.console.print(
+                f"  Quality scores:  avg {avg_score}/100"
+                f" ({low_quality} low, {medium_quality} medium, {high_quality} high)"
+            )
+            if low_quality > 0:
+                low_pages = [
+                    p for p in result.pages if p.quality_score < 30
+                ][:5]
+                self.console.print(
+                    "  [yellow]Low-quality pages:[/yellow]"
+                )
+                for p in low_pages:
+                    self.console.print(
+                        f"    {_truncate_url(p.url, 50)}"
+                        f"  score={p.quality_score}"
+                    )
+
         # Rate limiting
         if self.rate_limiter.backoff_count > 0:
             self.console.print()
@@ -545,6 +674,13 @@ class Orchestrator:
                 f"  Final delay:     {self.rate_limiter.delay_seconds:.1f}s"
                 f" (configured {self.rate_limiter._original_delay:.1f}s)"
             )
+
+        # Cache stats
+        if self._cache and (self._cache.hits or self._cache.misses):
+            self.console.print()
+            self.console.print("[bold]Cache[/bold]")
+            self.console.print(f"  Hits:   {self._cache.hits}")
+            self.console.print(f"  Misses: {self._cache.misses}")
 
         # Retries
         retried = [t for t in result.page_timings if t.retry_attempts > 1]
@@ -583,6 +719,102 @@ class Orchestrator:
                     f"  [dim]... and {len(result.errors) - 10} more errors[/dim]"
                 )
 
+    async def _run_dry_run(
+        self,
+        urls: list,
+        extractor: ContentExtractor,
+        formatter: LLMFormatter,
+        pattern: SitePattern | None,
+    ) -> bool:
+        """Extract a few sample pages and display a preview.
+
+        Returns True if the user wants to proceed with full extraction.
+        Uses a separate fetcher instance so the main fetcher is unaffected.
+        """
+        from rich.prompt import Confirm
+
+        # Pick up to 3 representative pages: first, middle, last
+        indices = [0]
+        if len(urls) > 2:
+            indices.append(len(urls) // 2)
+        if len(urls) > 1:
+            indices.append(len(urls) - 1)
+        samples = [urls[i] for i in indices]
+
+        self.console.print()
+        self.console.print(
+            f"[bold blue]Dry run:[/bold blue] extracting {len(samples)}"
+            f" sample page(s) from {len(urls)} discovered..."
+        )
+
+        preview_fetcher = self._create_fetcher()
+        async with preview_fetcher:
+            # Auto-detect pattern from first page if not set
+            if not pattern:
+                try:
+                    probe = await preview_fetcher.fetch(samples[0].url)
+                    if probe.html:
+                        detected = PatternRegistry.detect(samples[0].url, probe.html)
+                        if detected:
+                            pattern = detected
+                            self._apply_pattern(pattern)
+                            self.console.print(
+                                f"[blue]Auto-detected pattern: {pattern.name}[/blue]"
+                            )
+                except Exception:
+                    pass
+
+            for discovered in samples:
+                url = discovered.url
+                try:
+                    fetch_result = await preview_fetcher.fetch(url)
+                    if not fetch_result.success:
+                        self.console.print(
+                            f"\n[red]Failed:[/red] {url}"
+                            f" — {fetch_result.error or f'HTTP {fetch_result.status_code}'}"
+                        )
+                        continue
+
+                    effective_url = fetch_result.final_url or url
+                    content = extractor.extract(fetch_result.html, effective_url)
+                    if not content or not content.html:
+                        self.console.print(f"\n[yellow]No content extracted:[/yellow] {url}")
+                        continue
+
+                    page = formatter.format_page(
+                        content, effective_url, raw_html=fetch_result.html
+                    )
+
+                    # Display preview
+                    preview_len = 500
+                    preview = page.markdown[:preview_len]
+                    if len(page.markdown) > preview_len:
+                        preview += "\n..."
+
+                    info_lines = [
+                        f"[bold]URL:[/bold] {url}",
+                        f"[bold]Title:[/bold] {page.title or '(none)'}",
+                        f"[bold]Extraction method:[/bold] {content.extraction_method or 'unknown'}",
+                        f"[bold]Content length:[/bold] {len(page.markdown):,} chars",
+                        "",
+                        preview,
+                    ]
+                    self.console.print()
+                    self.console.print(Panel(
+                        "\n".join(info_lines),
+                        title=f"Preview: {_truncate_url(url, 60)}",
+                        border_style="cyan",
+                    ))
+
+                except Exception as e:
+                    self.console.print(f"\n[red]Error extracting {url}:[/red] {e}")
+
+        self.console.print()
+        return Confirm.ask(
+            f"Proceed with full extraction of {len(urls)} pages?",
+            default=True,
+        )
+
     async def _process_page(
         self,
         discovered,
@@ -598,6 +830,16 @@ class Orchestrator:
         """Fetch, extract, and format a single page with rate limiting."""
         url = discovered.url
 
+        # Run pre_fetch hooks (may modify URL or skip by returning None)
+        if self._pipeline.has_hooks(HookPoint.PRE_FETCH):
+            hook_url = await self._pipeline.run_pre_fetch(url)
+            if hook_url is None:
+                result.skipped.append(url)
+                timing.status = PageStatus.SKIPPED
+                progress.update(task_id, advance=1)
+                return
+            url = hook_url
+
         # Pre-filter obvious category pages by URL before expensive fetch
         if self._is_likely_category_url(url):
             result.skipped_categories.append(url)
@@ -611,15 +853,30 @@ class Orchestrator:
                 timing.status = PageStatus.FETCHING
                 timing.fetch_start = time.monotonic()
 
-                # Reuse the probe result if this is the same URL
-                if cached_probe and url == cached_probe.url:
-                    fetch_result = cached_probe
-                else:
-                    fetch_result = await fetcher.fetch_with_retry(
-                        url,
-                        self.config.rate_limit.max_retries,
-                        self.config.rate_limit.retry_base_delay,
-                    )
+                # Check HTTP cache first
+                cache_hit = False
+                if self._cache:
+                    entry, cached_html = self._cache.get(url)
+                    if cached_html is not None:
+                        fetch_result = self._cache.make_cached_result(
+                            url, entry, cached_html  # type: ignore[arg-type]
+                        )
+                        cache_hit = True
+
+                if not cache_hit:
+                    # Reuse the probe result if this is the same URL
+                    if cached_probe and url == cached_probe.url:
+                        fetch_result = cached_probe
+                    else:
+                        fetch_result = await fetcher.fetch_with_retry(
+                            url,
+                            self.config.rate_limit.max_retries,
+                            self.config.rate_limit.retry_base_delay,
+                        )
+
+                    # Store successful responses in cache
+                    if self._cache and fetch_result.success:
+                        self._cache.put(url, fetch_result)
 
                 timing.fetch_end = time.monotonic()
                 timing.retry_attempts = fetch_result.attempts
@@ -644,13 +901,32 @@ class Orchestrator:
                 # Use final URL (accounts for client-side redirects)
                 effective_url = fetch_result.final_url or url
 
+                html = fetch_result.html
+
+                # post_fetch hook
+                if self._pipeline.has_hooks(HookPoint.POST_FETCH):
+                    html = await self._pipeline.run_post_fetch(effective_url, html)
+
+                # pre_extract hook
+                if self._pipeline.has_hooks(HookPoint.PRE_EXTRACT):
+                    html = await self._pipeline.run_pre_extract(effective_url, html)
+
                 timing.status = PageStatus.EXTRACTING
                 timing.extract_start = time.monotonic()
 
-                content = extractor.extract(fetch_result.html, effective_url)
+                content = extractor.extract(html, effective_url)
 
                 timing.extract_end = time.monotonic()
                 timing.extraction_method = (content.extraction_method or "") if content else ""
+
+                if self._debug_html:
+                    await self._debug_html.save(
+                        url=effective_url,
+                        base_url=self.config.base_url,
+                        html=fetch_result.html,
+                        extraction_method=timing.extraction_method or None,
+                        content_length=len(content.html) if content and content.html else 0,
+                    )
 
                 if not content or not content.html:
                     result.skipped.append(url)
@@ -661,6 +937,14 @@ class Orchestrator:
                     result.skipped.append(url)
                     timing.status = PageStatus.SKIPPED
                     return
+
+                # post_extract hook
+                if self._pipeline.has_hooks(HookPoint.POST_EXTRACT):
+                    content = await self._pipeline.run_post_extract(effective_url, content)
+
+                # pre_convert hook
+                if self._pipeline.has_hooks(HookPoint.PRE_CONVERT):
+                    content = await self._pipeline.run_pre_convert(effective_url, content)
 
                 timing.status = PageStatus.CONVERTING
                 timing.convert_start = time.monotonic()
@@ -673,6 +957,10 @@ class Orchestrator:
 
                 timing.convert_end = time.monotonic()
 
+                # post_convert hook
+                if self._pipeline.has_hooks(HookPoint.POST_CONVERT):
+                    page = await self._pipeline.run_post_convert(effective_url, page)
+
                 if self._is_category_page(page):
                     result.skipped_categories.append(url)
                     timing.status = PageStatus.SKIPPED
@@ -681,6 +969,7 @@ class Orchestrator:
                 result.pages.append(page)
                 timing.status = PageStatus.DONE
                 self.rate_limiter.ease_off()
+                self._save_page_state(url, "completed")
 
             finally:
                 self.rate_limiter.release()
@@ -690,8 +979,24 @@ class Orchestrator:
             result.errors.append((url, error_msg, category))
             timing.status = PageStatus.ERROR
             timing.error = error_msg
+            self._save_page_state(url, "failed", error_msg)
         finally:
             progress.update(task_id, advance=1)
+
+    def _save_page_state(
+        self, url: str, status: str, error: str | None = None
+    ) -> None:
+        """Record page status in the state file for resume support."""
+        if not self._state_manager or not self._state_manager._state:
+            return
+        state = self._state_manager._state
+        if status == "completed":
+            state.mark_completed(url)
+        elif status == "failed":
+            state.mark_failed(url, error or "unknown")
+        else:
+            state.mark_skipped(url)
+        self._state_manager.save()
 
     @staticmethod
     def _categorize_error(
@@ -779,6 +1084,8 @@ class Orchestrator:
             return SitemapDiscoverer(self.config.base_url, self.config.discovery)
         elif mode == DiscoveryMode.CRAWL:
             return CrawlerDiscoverer(self.config.base_url, self.config.discovery)
+        elif mode == DiscoveryMode.CRAWL_JS:
+            return JsCrawlerDiscoverer(self.config.base_url, self.config.discovery)
         elif mode == DiscoveryMode.MANUAL:
             return ManualDiscoverer(self.config.base_url, self.config.discovery)
         else:
@@ -786,10 +1093,11 @@ class Orchestrator:
 
     def _create_fetcher(self) -> BaseFetcher:
         """Create the appropriate fetcher."""
+        auth = self.config.auth
         if self.config.fetcher.use_js:
-            return PlaywrightFetcher(self.config.fetcher)
+            return PlaywrightFetcher(self.config.fetcher, auth=auth)
         else:
-            return HttpFetcher(self.config.fetcher)
+            return HttpFetcher(self.config.fetcher, auth=auth)
 
     @staticmethod
     def _is_category_page(page: FormattedPage) -> bool:
@@ -857,16 +1165,30 @@ class Orchestrator:
         self, pages: list[FormattedPage], site_info: SiteInfo
     ) -> Path:
         """Write the output files."""
-        writer: SingleFileOutput | MultiFileOutput
-        if self.config.output.mode == OutputMode.SINGLE:
+        mode = self.config.output.mode
+        path = self.config.output.path
+
+        writer: SingleFileOutput | MultiFileOutput | JsonOutput | JsonlOutput | ChunkedOutput
+        if mode == OutputMode.SINGLE:
             writer = SingleFileOutput(
-                self.config.output.path,
+                path,
                 include_metadata=self.config.output.include_metadata,
                 include_toc=self.config.output.include_toc,
             )
+        elif mode == OutputMode.JSON:
+            writer = JsonOutput(path)
+        elif mode == OutputMode.JSONL:
+            writer = JsonlOutput(path)
+        elif mode == OutputMode.CHUNKED:
+            chunk_cfg = self.config.output.chunk
+            writer = ChunkedOutput(
+                path,
+                max_tokens=chunk_cfg.max_tokens,
+                overlap_tokens=chunk_cfg.overlap_tokens,
+            )
         else:
             writer = MultiFileOutput(
-                self.config.output.path,
+                path,
                 include_metadata=self.config.output.include_metadata,
             )
 

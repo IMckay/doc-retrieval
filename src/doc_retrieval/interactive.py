@@ -395,20 +395,39 @@ class InteractiveExtractor:
         self.console.print("\n[bold]Output mode:[/bold]")
         self.console.print("  1. Single file - all pages combined into one Markdown file")
         self.console.print("  2. Multiple files - one Markdown file per page")
+        self.console.print("  3. JSON - structured JSON with metadata (for RAG pipelines)")
+        self.console.print("  4. JSONL - one JSON object per line (for streaming/embeddings)")
+        self.console.print("  5. Chunked - token-limited JSONL chunks (for LLM context windows)")
 
-        mode_choice = Prompt.ask("Choose output mode", choices=["1", "2"], default="1")
-        output_mode = OutputMode.SINGLE if mode_choice == "1" else OutputMode.MULTI
+        mode_choice = Prompt.ask(
+            "Choose output mode", choices=["1", "2", "3", "4", "5"], default="1"
+        )
+        mode_map = {
+            "1": OutputMode.SINGLE,
+            "2": OutputMode.MULTI,
+            "3": OutputMode.JSON,
+            "4": OutputMode.JSONL,
+            "5": OutputMode.CHUNKED,
+        }
+        output_mode = mode_map[mode_choice]
 
         # Output path
         parsed = urlparse(url)
         default_name = parsed.netloc.replace(".", "-")
 
-        if output_mode == OutputMode.SINGLE:
-            default_path = f"output/{default_name}.md"
-            output_path = Prompt.ask("Output file", default=default_path)
-        else:
+        ext_map = {
+            OutputMode.SINGLE: ".md",
+            OutputMode.JSON: ".json",
+            OutputMode.JSONL: ".jsonl",
+            OutputMode.CHUNKED: ".jsonl",
+        }
+        if output_mode == OutputMode.MULTI:
             default_path = f"output/{default_name}/"
             output_path = Prompt.ask("Output directory", default=default_path)
+        else:
+            ext = ext_map.get(output_mode, ".md")
+            default_path = f"output/{default_name}{ext}"
+            output_path = Prompt.ask("Output file", default=default_path)
 
         return output_mode, Path(output_path)
 

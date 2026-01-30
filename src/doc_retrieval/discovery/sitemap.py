@@ -13,6 +13,12 @@ from doc_retrieval.utils.url_utils import is_doc_url
 
 logger = logging.getLogger(__name__)
 
+# Suppress noisy logs from ultimate-sitemap-parser (homepage assumptions,
+# robots.txt 404s, etc.) — these leak to stderr and confuse users.
+logging.getLogger("usp.helpers").setLevel(logging.ERROR)
+logging.getLogger("usp.tree").setLevel(logging.ERROR)
+logging.getLogger("usp.fetch_parse").setLevel(logging.ERROR)
+
 
 class SitemapDiscoverer(BaseDiscoverer):
     """Discover URLs from sitemap.xml."""

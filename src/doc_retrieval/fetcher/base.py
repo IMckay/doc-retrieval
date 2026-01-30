@@ -7,7 +7,7 @@ from email.utils import parsedate_to_datetime
 
 from pydantic import BaseModel
 
-from doc_retrieval.config import FetcherConfig
+from doc_retrieval.config import AuthConfig, FetcherConfig
 
 _MAX_RETRY_DELAY = 60.0  # Never sleep longer than this on a single retry
 
@@ -22,6 +22,8 @@ class FetchResult(BaseModel):
     error: str | None = None
     retry_after: float | None = None
     attempts: int = 1
+    etag: str | None = None
+    last_modified: str | None = None
 
     @property
     def success(self) -> bool:
@@ -31,8 +33,9 @@ class FetchResult(BaseModel):
 class BaseFetcher(ABC):
     """Abstract base class for page fetchers."""
 
-    def __init__(self, config: FetcherConfig):
+    def __init__(self, config: FetcherConfig, auth: AuthConfig | None = None):
         self.config = config
+        self.auth = auth or AuthConfig()
 
     @abstractmethod
     async def fetch(self, url: str) -> FetchResult:

@@ -11,6 +11,7 @@ class DiscoveryMode(str, Enum):
 
     SITEMAP = "sitemap"
     CRAWL = "crawl"
+    CRAWL_JS = "crawl-js"
     MANUAL = "manual"
 
 
@@ -19,6 +20,9 @@ class OutputMode(str, Enum):
 
     SINGLE = "single"
     MULTI = "multi"
+    JSON = "json"
+    JSONL = "jsonl"
+    CHUNKED = "chunked"
 
 
 class DiscoveryConfig(BaseModel):
@@ -93,6 +97,13 @@ class ExtractorConfig(BaseModel):
     include_links: bool = True
 
 
+class ChunkConfig(BaseModel):
+    """Configuration for chunked output."""
+
+    max_tokens: int = Field(default=4000, ge=100, le=100000)
+    overlap_tokens: int = Field(default=200, ge=0, le=2000)
+
+
 class OutputConfig(BaseModel):
     """Configuration for output."""
 
@@ -100,6 +111,15 @@ class OutputConfig(BaseModel):
     path: Path = Path("./output/output.md")
     include_metadata: bool = True
     include_toc: bool = True
+    chunk: ChunkConfig = Field(default_factory=ChunkConfig)
+
+
+class AuthConfig(BaseModel):
+    """Configuration for authentication and custom request headers."""
+
+    headers: dict[str, str] = Field(default_factory=dict)
+    cookies: dict[str, str] = Field(default_factory=dict)
+    cookie_file: Path | None = None
 
 
 class RateLimitConfig(BaseModel):
@@ -111,6 +131,18 @@ class RateLimitConfig(BaseModel):
     retry_base_delay: float = Field(default=1.0, ge=0.1, le=30.0)
 
 
+class CustomPatternConfig(BaseModel):
+    """User-defined site pattern (name derived from TOML key)."""
+
+    description: str = ""
+    content_selectors: list[str] = Field(default_factory=list)
+    remove_selectors: list[str] = Field(default_factory=list)
+    requires_js: bool = True
+    wait_selector: str | None = None
+    wait_time_ms: int = Field(default=0, ge=0, le=30000)
+    click_tabs_selector: str | None = None
+
+
 class AppConfig(BaseModel):
     """Main application configuration."""
 
@@ -120,9 +152,19 @@ class AppConfig(BaseModel):
     extractor: ExtractorConfig = Field(default_factory=ExtractorConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
+    custom_patterns: dict[str, CustomPatternConfig] = Field(default_factory=dict)
     pattern: str | None = None  # Site pattern preset name
     verbose: bool = False
     skip_urls: Path | None = None
+    dry_run: bool = False
+    resume: bool = False
+    state_file: Path | None = None
+    save_html: bool = False
+    no_cache: bool = False
+    cache_dir: Path | None = None  # Default: ~/.cache/doc-retrieval
+    ignore_robots: bool = False
+    hooks: dict[str, list[str]] = Field(default_factory=dict)
 
     @classmethod
     def from_toml(cls, path: Path) -> "AppConfig":
@@ -139,6 +181,69 @@ class AppConfig(BaseModel):
         """Serialize config to TOML format."""
         data = self.model_dump(mode="json", exclude_defaults=True)
         return _dict_to_toml(data)
+
+
+class BatchSiteConfig(BaseModel):
+    """Configuration for one site in a batch extraction."""
+
+    url: str
+    output: Path = Path("./output/")
+    pattern: str | None = None
+    mode: str | None = None
+    discovery: str | None = None
+    max_pages: int | None = None
+    include_pattern: str | None = None
+    exclude_pattern: str | None = None
+
+
+class BatchConfig(BaseModel):
+    """Configuration for batch extraction of multiple sites."""
+
+    site: list[BatchSiteConfig]
+    verbose: bool = False
+    delay: float = 1.0
+    js: bool = True
+    save_html: bool = False
+    resume: bool = False
+
+    @classmethod
+    def from_toml(cls, path: Path) -> "BatchConfig":
+        """Load batch config from a TOML file."""
+        try:
+            import tomllib  # type: ignore[import-not-found]
+        except ModuleNotFoundError:
+            import tomli as tomllib  # type: ignore[import-not-found]
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        return cls.model_validate(data)
+
+    def to_app_configs(self) -> list[AppConfig]:
+        """Convert batch config into a list of AppConfig objects."""
+        configs: list[AppConfig] = []
+        for site in self.site:
+            output_mode = OutputMode(site.mode) if site.mode else OutputMode.MULTI
+            discovery_mode = (
+                DiscoveryMode(site.discovery) if site.discovery else DiscoveryMode.SITEMAP
+            )
+            configs.append(
+                AppConfig(
+                    base_url=site.url,
+                    discovery=DiscoveryConfig(
+                        mode=discovery_mode,
+                        max_pages=site.max_pages or 0,
+                        include_pattern=site.include_pattern,
+                        exclude_pattern=site.exclude_pattern,
+                    ),
+                    fetcher=FetcherConfig(use_js=self.js),
+                    output=OutputConfig(mode=output_mode, path=site.output),
+                    rate_limit=RateLimitConfig(delay_seconds=self.delay),
+                    pattern=site.pattern,
+                    verbose=self.verbose,
+                    save_html=self.save_html,
+                    resume=self.resume,
+                )
+            )
+        return configs
 
 
 def _toml_value(v: object) -> str:
