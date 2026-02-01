@@ -323,16 +323,18 @@ class Orchestrator:
                 try:
                     probe_result = await fetcher.fetch(first_url)
                     if probe_result.html:
-                        detected = PatternRegistry.detect(
+                        detection = PatternRegistry.detect_with_confidence(
                             first_url, probe_result.html
                         )
-                        if detected:
-                            pattern = detected
+                        if detection:
+                            pattern = detection.pattern
                             self._apply_pattern(pattern)
                             if self.config.verbose:
                                 self.console.print(
                                     f"[blue]Auto-detected pattern:"
-                                    f" {pattern.name}[/blue]"
+                                    f" {pattern.name}"
+                                    f" (score={detection.score},"
+                                    f" confidence={detection.confidence:.0%})[/blue]"
                                 )
                 except Exception:
                     logger.debug("Pattern auto-detection probe failed", exc_info=True)
@@ -754,12 +756,16 @@ class Orchestrator:
                 try:
                     probe = await preview_fetcher.fetch(samples[0].url)
                     if probe.html:
-                        detected = PatternRegistry.detect(samples[0].url, probe.html)
-                        if detected:
-                            pattern = detected
+                        detection = PatternRegistry.detect_with_confidence(
+                            samples[0].url, probe.html
+                        )
+                        if detection:
+                            pattern = detection.pattern
                             self._apply_pattern(pattern)
                             self.console.print(
-                                f"[blue]Auto-detected pattern: {pattern.name}[/blue]"
+                                f"[blue]Auto-detected pattern:"
+                                f" {pattern.name}"
+                                f" (confidence={detection.confidence:.0%})[/blue]"
                             )
                 except Exception:
                     pass
@@ -776,13 +782,16 @@ class Orchestrator:
                         continue
 
                     effective_url = fetch_result.final_url or url
-                    content = extractor.extract(fetch_result.html, effective_url)
+                    content = await asyncio.to_thread(
+                        extractor.extract, fetch_result.html, effective_url,
+                    )
                     if not content or not content.html:
                         self.console.print(f"\n[yellow]No content extracted:[/yellow] {url}")
                         continue
 
-                    page = formatter.format_page(
-                        content, effective_url, raw_html=fetch_result.html
+                    page = await asyncio.to_thread(
+                        formatter.format_page,
+                        content, effective_url, raw_html=fetch_result.html,
                     )
 
                     # Display preview
@@ -934,7 +943,7 @@ class Orchestrator:
                 timing.status = PageStatus.EXTRACTING
                 timing.extract_start = time.monotonic()
 
-                content = extractor.extract(html, effective_url)
+                content = await asyncio.to_thread(extractor.extract, html, effective_url)
 
                 timing.extract_end = time.monotonic()
                 timing.extraction_method = (content.extraction_method or "") if content else ""
@@ -971,8 +980,9 @@ class Orchestrator:
 
                 # Format — pass raw HTML so API schema detection
                 # operates on the full, uncleaned page DOM
-                page = formatter.format_page(
-                    content, effective_url, raw_html=fetch_result.html
+                page = await asyncio.to_thread(
+                    formatter.format_page,
+                    content, effective_url, raw_html=fetch_result.html,
                 )
 
                 timing.convert_end = time.monotonic()
@@ -1055,7 +1065,7 @@ class Orchestrator:
         return None
 
     def _apply_pattern(self, pattern: SitePattern) -> None:
-        """Apply pattern settings to config (creates new sub-config objects)."""
+        """Apply pattern settings to config via PatternRegistry.apply_to_config()."""
         parts: list[str] = []
         if pattern.content_selectors:
             parts.append(f"{len(pattern.content_selectors)} content selectors")
@@ -1068,33 +1078,7 @@ class Orchestrator:
                 f"[blue]Applied pattern '{pattern.name}': {', '.join(parts)}[/blue]"
             )
 
-        extractor_updates: dict = {}
-        if pattern.content_selectors:
-            extractor_updates["content_selectors"] = (
-                pattern.content_selectors + self.config.extractor.content_selectors
-            )
-        if pattern.remove_selectors:
-            extractor_updates["remove_selectors"] = (
-                pattern.remove_selectors + self.config.extractor.remove_selectors
-            )
-        if extractor_updates:
-            self.config.extractor = self.config.extractor.model_copy(
-                update=extractor_updates
-            )
-
-        fetcher_updates: dict = {}
-        if pattern.requires_js:
-            fetcher_updates["use_js"] = True
-        if pattern.wait_selector:
-            fetcher_updates["wait_selector"] = pattern.wait_selector
-        if pattern.wait_time_ms:
-            fetcher_updates["wait_time_ms"] = pattern.wait_time_ms
-        if pattern.click_tabs_selector:
-            fetcher_updates["click_tabs_selector"] = pattern.click_tabs_selector
-        if fetcher_updates:
-            self.config.fetcher = self.config.fetcher.model_copy(
-                update=fetcher_updates
-            )
+        self.config = PatternRegistry.apply_to_config(pattern.name, self.config)
 
     def _create_discoverer(self) -> BaseDiscoverer:
         """Create the appropriate discoverer."""
