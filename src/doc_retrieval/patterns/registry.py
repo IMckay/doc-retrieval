@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 
 
@@ -533,6 +534,58 @@ class PatternRegistry:
                 matched.append(f"{signal.kind}:{signal.value}")
 
         return score, matched
+
+    @classmethod
+    def _score_phase2(
+        cls,
+        pattern: SitePattern,
+        html: str,
+    ) -> tuple[int, list[str], bool]:
+        """Score a pattern's Phase 2 checks against parsed HTML.
+
+        Returns (score, matched_descriptions, disqualified).
+        disqualified is True if any required check failed.
+        """
+        if not pattern.phase2_checks:
+            return 0, [], False
+
+        soup = BeautifulSoup(html, "html.parser")
+        score = 0
+        matched: list[str] = []
+        disqualified = False
+
+        for check in pattern.phase2_checks:
+            hit = False
+
+            if check.kind == "css_present":
+                hit = soup.select_one(check.value) is not None
+
+            elif check.kind == "css_absent":
+                hit = soup.select_one(check.value) is None
+
+            elif check.kind == "script_src_regex":
+                regex = re.compile(check.value)
+                for script in soup.find_all("script", src=True):
+                    src_val = script["src"]
+                    src_str = src_val if isinstance(src_val, str) else src_val[0]
+                    if regex.search(src_str):
+                        hit = True
+                        break
+
+            elif check.kind == "content_min_length":
+                threshold = int(check.value)
+                main_el = soup.select_one("main") or soup.select_one("body")
+                if main_el:
+                    text = main_el.get_text(separator=" ", strip=True)
+                    hit = len(text) >= threshold
+
+            if hit:
+                score += check.weight
+                matched.append(f"{check.kind}:{check.value}")
+            elif check.required:
+                disqualified = True
+
+        return score, matched, disqualified
 
     @classmethod
     def detect_with_confidence(
