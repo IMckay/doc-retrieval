@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
@@ -433,6 +434,14 @@ _META_GENERATOR_RE = re.compile(
 )
 
 
+_DOC_PATH_RE = re.compile(
+    r'href="(/(?:docs?|guide|api|reference|tutorial|getting-started)[^"]*)"',
+    re.IGNORECASE,
+)
+
+_SAME_DOMAIN_HREF_RE = re.compile(r'href="(/[^"]*)"')
+
+
 def _extract_meta_generators(html: str) -> list[str]:
     """Extract generator meta tag values from the first 5000 chars of HTML."""
     head = html[:5000]
@@ -691,6 +700,67 @@ class PatternRegistry:
             })
 
         return cls._select_winner(candidates)
+
+    @staticmethod
+    def _should_probe_inner_pages(
+        best_confidence: float,
+        best_score: int,
+        second_score: int,
+    ) -> bool:
+        """Determine if inner-page probing should be triggered."""
+        if best_score == 0:
+            return True
+        if best_confidence < 0.5:
+            return True
+        if second_score >= best_score * 0.8:
+            return True
+        return False
+
+    @staticmethod
+    def _extract_probe_urls(html: str, base_url: str) -> list[str]:
+        """Extract up to 3 internal URLs for probing, preferring doc-like paths."""
+        parsed_base = urlparse(base_url)
+        base_domain = parsed_base.netloc
+        base_normalized = f"{parsed_base.scheme}://{base_domain}"
+
+        # Prefer doc-like paths
+        doc_hrefs = _DOC_PATH_RE.findall(html)
+        # Fallback: any same-domain relative path
+        all_hrefs = _SAME_DOMAIN_HREF_RE.findall(html)
+
+        seen: set[str] = set()
+        result: list[str] = []
+
+        def _add(href: str) -> bool:
+            # Strip fragment
+            href = href.split("#")[0]
+            if not href or href == "/":
+                return False
+            full = urljoin(base_normalized + "/", href)
+            # Must be same domain
+            if urlparse(full).netloc != base_domain:
+                return False
+            if full in seen:
+                return False
+            # Skip if it's the base URL itself
+            if full.rstrip("/") == base_url.rstrip("/"):
+                return False
+            seen.add(full)
+            result.append(full)
+            return len(result) >= 3
+
+        # Doc paths first
+        for href in doc_hrefs:
+            if _add(href):
+                break
+
+        # Fill remaining with any same-domain links
+        if len(result) < 3:
+            for href in all_hrefs:
+                if _add(href):
+                    break
+
+        return result
 
     @classmethod
     def detect_with_confidence(
