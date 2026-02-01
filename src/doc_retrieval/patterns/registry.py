@@ -476,6 +476,65 @@ class PatternRegistry:
         return list(cls._patterns.values())
 
     @classmethod
+    def _score_phase1(
+        cls,
+        pattern: SitePattern,
+        url: str,
+        html: str,
+        headers: dict[str, str],
+    ) -> tuple[int, list[str]]:
+        """Score a pattern's Phase 1 signals against page data.
+
+        Returns (score, list_of_matched_signal_descriptions).
+        """
+        url_lower = url.lower()
+        html_lower = html.lower() if html else ""
+        generators = _extract_meta_generators(html) if html else []
+        generators_lower = [g.lower() for g in generators]
+        headers_lower = {k.lower(): v.lower() for k, v in headers.items()}
+
+        score = 0
+        matched: list[str] = []
+
+        for signal in pattern.phase1_signals:
+            hit = False
+
+            if signal.kind == "url_substring":
+                target = url if signal.case_sensitive else url_lower
+                value = signal.value if signal.case_sensitive else signal.value.lower()
+                hit = value in target
+
+            elif signal.kind == "html_substring":
+                target = html if signal.case_sensitive else html_lower
+                value = signal.value if signal.case_sensitive else signal.value.lower()
+                hit = value in target
+
+            elif signal.kind == "meta_generator":
+                value = signal.value if signal.case_sensitive else signal.value.lower()
+                source = generators if signal.case_sensitive else generators_lower
+                hit = any(value in g for g in source)
+
+            elif signal.kind == "http_header":
+                if ":" in signal.value:
+                    header_name, expected = signal.value.split(":", 1)
+                    header_name_l = header_name.lower()
+                    expected_l = expected.lower() if not signal.case_sensitive else expected
+                    actual = headers_lower.get(header_name_l, "")
+                    if not signal.case_sensitive:
+                        hit = expected_l in actual
+                    else:
+                        raw_actual = headers.get(header_name, "")
+                        hit = expected in raw_actual
+                else:
+                    hit = signal.value.lower() in headers_lower
+
+            if hit:
+                score += signal.weight
+                matched.append(f"{signal.kind}:{signal.value}")
+
+        return score, matched
+
+    @classmethod
     def detect_with_confidence(
         cls, url: str, html: str
     ) -> DetectionResult | None:
