@@ -247,9 +247,17 @@ DOCUSAURUS_OPENAPI_PATTERN = SitePattern(
     click_tabs_selector='.openapi-tabs__code-container [role="tab"]',
     phase1_signals=[],  # Inherits candidacy from parent (docusaurus)
     phase2_checks=[
-        Phase2Check(kind="css_present", value=".openapi-left-panel__container", weight=30, required=True),
-        Phase2Check(kind="css_present", value=".openapi-schema__property", weight=20),
-        Phase2Check(kind="script_src_regex", value="docusaurus-openapi|plugin-content-docs-api", weight=20),
+        Phase2Check(
+            kind="css_present", value=".openapi-left-panel__container",
+            weight=30, required=True,
+        ),
+        Phase2Check(
+            kind="css_present", value=".openapi-schema__property", weight=20,
+        ),
+        Phase2Check(
+            kind="script_src_regex",
+            value="docusaurus-openapi|plugin-content-docs-api", weight=20,
+        ),
         Phase2Check(kind="css_present", value=".openapi-explorer", weight=15),
     ],
 )
@@ -385,7 +393,10 @@ REDOC_PATTERN = SitePattern(
     wait_time_ms=1000,
     phase1_signals=[
         DetectionSignal(kind="html_substring", value="redoc-wrap", weight=30),
-        DetectionSignal(kind="html_substring", value="redoc.standalone", weight=30, case_sensitive=False),
+        DetectionSignal(
+            kind="html_substring", value="redoc.standalone",
+            weight=30, case_sensitive=False,
+        ),
     ],
     phase2_checks=[
         Phase2Check(kind="css_present", value=".redoc-wrap", weight=20),
@@ -526,8 +537,6 @@ class PatternRegistry:
         Pattern settings override default values but not explicit user settings.
         Returns a new AppConfig (original is not mutated).
         """
-        from doc_retrieval.config import AppConfig  # noqa: F811
-
         pattern = cls.get(pattern_name)
         if not pattern:
             return config
