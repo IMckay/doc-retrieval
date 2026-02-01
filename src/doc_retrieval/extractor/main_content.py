@@ -1,6 +1,7 @@
 """Main content extraction from HTML pages."""
 
 import logging
+import re
 
 import trafilatura
 from bs4 import BeautifulSoup
@@ -78,10 +79,37 @@ class ContentExtractor:
                 elem.decompose()
         return str(soup)
 
+    # Skip trafilatura for very large HTML documents — its heuristics and
+    # deduplication are O(n²)-ish and can take 100+ seconds on big API ref pages.
+    # Readability / BeautifulSoup handle large docs much faster.
+    _TRAFILATURA_SIZE_LIMIT = 500_000  # characters (~500 KB)
+
+    _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+    _DESC_RE = re.compile(
+        r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']*)["\']',
+        re.IGNORECASE,
+    )
+    _DESC_RE_ALT = re.compile(
+        r'<meta[^>]+content=["\']([^"\']*)["\'][^>]+name=["\']description["\']',
+        re.IGNORECASE,
+    )
+
     def _extract_with_trafilatura(self, html: str, url: str) -> ExtractedContent | None:
-        """Extract using trafilatura."""
+        """Extract using trafilatura.
+
+        Uses a single trafilatura.extract() call (HTML output) and derives
+        plain text + metadata cheaply, instead of the previous 3-call approach
+        (extract HTML + extract_metadata + extract text).
+        """
+        if len(html) > self._TRAFILATURA_SIZE_LIMIT:
+            logger.debug(
+                "Skipping trafilatura for %s (HTML size %d > %d)",
+                url, len(html), self._TRAFILATURA_SIZE_LIMIT,
+            )
+            return None
+
         try:
-            result = trafilatura.extract(
+            html_result = trafilatura.extract(
                 html,
                 url=url,
                 include_comments=False,
@@ -93,19 +121,24 @@ class ContentExtractor:
                 deduplicate=True,
             )
 
-            if result:
-                metadata = trafilatura.extract_metadata(html, default_url=url)
-                text = trafilatura.extract(
-                    html,
-                    url=url,
-                    include_comments=False,
-                    output_format="txt",
-                )
+            if html_result:
+                # Derive text from the (smaller) extracted HTML — much cheaper
+                # than re-running trafilatura with output_format="txt".
+                soup = BeautifulSoup(html_result, "lxml")
+                text = soup.get_text(separator=" ", strip=True)
+
+                # Extract title/description from the <head> of the original HTML
+                # using regex on the first 10 KB (these tags are always near the top).
+                head = html[:10_000]
+                m = self._TITLE_RE.search(head)
+                title = m.group(1).strip() if m else None
+                m = self._DESC_RE.search(head) or self._DESC_RE_ALT.search(head)
+                description = m.group(1).strip() if m else None
 
                 return ExtractedContent(
-                    html=result,
-                    title=metadata.title if metadata else None,
-                    description=metadata.description if metadata else None,
+                    html=html_result,
+                    title=title,
+                    description=description,
                     text=text,
                 )
         except Exception:

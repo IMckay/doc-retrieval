@@ -68,6 +68,7 @@ class ExtractorConfig(BaseModel):
             "nav",
             "header",
             "footer",
+            "aside",
             ".navigation",
             ".nav",
             ".navbar",

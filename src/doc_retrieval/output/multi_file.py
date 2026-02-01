@@ -18,7 +18,7 @@ class MultiFileOutput:
         output_dir: Path,
         include_metadata: bool = True,
     ):
-        self.output_dir = Path(output_dir)
+        self.output_dir = Path(output_dir).resolve()
         self.formatter = LLMFormatter(include_metadata=include_metadata, include_toc=False)
 
     async def write(self, pages: list[FormattedPage], site_info: SiteInfo) -> Path:
