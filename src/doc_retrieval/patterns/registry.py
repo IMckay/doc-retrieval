@@ -452,8 +452,6 @@ STARLIGHT_PATTERN = SitePattern(
 )
 
 
-_DETECTION_THRESHOLD = 20
-
 CONFIDENCE_NORMALIZER = 100
 
 _META_GENERATOR_RE = re.compile(
@@ -837,64 +835,17 @@ class PatternRegistry:
     def detect_with_confidence(
         cls, url: str, html: str
     ) -> DetectionResult | None:
-        """Score all patterns and return the highest scorer above threshold.
+        """Score all patterns and return the best match.
 
-        Returns None if no pattern scores at or above _DETECTION_THRESHOLD.
+        Backward-compatible wrapper around detect_two_phase().
         """
-        url_lower = url.lower()
-        html_lower = html.lower() if html else ""
-        generators = _extract_meta_generators(html) if html else []
-        generators_lower = [g.lower() for g in generators]
-
-        best: DetectionResult | None = None
-
-        for pattern in cls._patterns.values():
-            if not pattern.detection_signals:
-                continue
-
-            score = 0
-            matched: list[str] = []
-            max_possible = sum(s.weight for s in pattern.detection_signals)
-
-            for signal in pattern.detection_signals:
-                hit = False
-                if signal.kind == "url_substring":
-                    target = url if signal.case_sensitive else url_lower
-                    value = signal.value if signal.case_sensitive else signal.value.lower()
-                    hit = value in target
-                elif signal.kind == "html_substring":
-                    target = html if signal.case_sensitive else html_lower
-                    value = signal.value if signal.case_sensitive else signal.value.lower()
-                    hit = value in target
-                elif signal.kind == "meta_generator":
-                    value = signal.value if signal.case_sensitive else signal.value.lower()
-                    source = generators if signal.case_sensitive else generators_lower
-                    hit = any(value in g for g in source)
-
-                if hit:
-                    score += signal.weight
-                    matched.append(f"{signal.kind}:{signal.value}")
-
-            if score < _DETECTION_THRESHOLD:
-                continue
-
-            confidence = min(score / max(max_possible, 1), 1.0)
-
-            if best is None or score > best.score:
-                best = DetectionResult(
-                    pattern=pattern,
-                    score=score,
-                    confidence=confidence,
-                    matched_signals=matched,
-                )
-
-        return best
+        return cls.detect_two_phase(url, html, headers={})
 
     @classmethod
     def detect(cls, url: str, html: str) -> SitePattern | None:
         """Auto-detect site type from URL or HTML content.
 
-        Thin wrapper around detect_with_confidence() for backward compatibility.
+        Backward-compatible wrapper around detect_two_phase().
         """
-        result = cls.detect_with_confidence(url, html)
+        result = cls.detect_two_phase(url, html, headers={})
         return result.pattern if result else None
