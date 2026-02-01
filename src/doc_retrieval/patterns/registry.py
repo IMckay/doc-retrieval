@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from doc_retrieval.config import AppConfig
 
 
 class DetectionSignal(BaseModel):
@@ -488,6 +492,45 @@ class PatternRegistry:
     def list_patterns(cls) -> list[SitePattern]:
         """List all registered patterns."""
         return list(cls._patterns.values())
+
+    @classmethod
+    def apply_to_config(cls, pattern_name: str, config: AppConfig) -> AppConfig:
+        """Apply pattern settings to config, filling defaults only.
+
+        Pattern settings override default values but not explicit user settings.
+        Returns a new AppConfig (original is not mutated).
+        """
+        from doc_retrieval.config import AppConfig  # noqa: F811
+
+        pattern = cls.get(pattern_name)
+        if not pattern:
+            return config
+
+        fetcher_updates: dict = {}
+        if config.fetcher.wait_selector is None and pattern.wait_selector:
+            fetcher_updates["wait_selector"] = pattern.wait_selector
+        if config.fetcher.wait_time_ms == 0 and pattern.wait_time_ms > 0:
+            fetcher_updates["wait_time_ms"] = pattern.wait_time_ms
+        if config.fetcher.click_tabs_selector is None and pattern.click_tabs_selector:
+            fetcher_updates["click_tabs_selector"] = pattern.click_tabs_selector
+        if not config.fetcher.use_js and pattern.requires_js:
+            fetcher_updates["use_js"] = True
+
+        extractor_updates: dict = {}
+        if pattern.content_selectors:
+            extractor_updates["content_selectors"] = pattern.content_selectors
+        if pattern.remove_selectors:
+            extractor_updates["remove_selectors"] = pattern.remove_selectors
+
+        updates: dict = {}
+        if fetcher_updates:
+            updates["fetcher"] = config.fetcher.model_copy(update=fetcher_updates)
+        if extractor_updates:
+            updates["extractor"] = config.extractor.model_copy(update=extractor_updates)
+
+        if updates:
+            return config.model_copy(update=updates)
+        return config
 
     @classmethod
     def _score_phase1(
