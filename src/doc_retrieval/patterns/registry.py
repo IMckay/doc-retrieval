@@ -447,6 +447,8 @@ def _extract_meta_generators(html: str) -> list[str]:
 class PatternRegistry:
     """Registry of site-specific patterns."""
 
+    _PHASE1_CANDIDATE_THRESHOLD = 15
+
     _patterns: dict[str, SitePattern] = {
         "docusaurus": DOCUSAURUS_PATTERN,
         "docusaurus-openapi": DOCUSAURUS_OPENAPI_PATTERN,
@@ -643,6 +645,52 @@ class PatternRegistry:
             confidence=confidence,
             matched_signals=all_matched,
         )
+
+    @classmethod
+    def detect_two_phase(
+        cls,
+        url: str,
+        html: str,
+        headers: dict[str, str] | None = None,
+    ) -> DetectionResult | None:
+        """Two-phase pattern detection with hierarchy support."""
+        if headers is None:
+            headers = {}
+
+        # Phase 1: score all patterns
+        phase1_scores: dict[str, tuple[int, list[str]]] = {}
+        for pattern in cls._patterns.values():
+            if not pattern.phase1_signals:
+                continue
+            score, matched = cls._score_phase1(pattern, url, html, headers)
+            if score >= cls._PHASE1_CANDIDATE_THRESHOLD:
+                phase1_scores[pattern.name] = (score, matched)
+
+        # Build candidate set: patterns that passed Phase 1 + children of passing parents
+        candidate_names: set[str] = set(phase1_scores.keys())
+        for pattern in cls._patterns.values():
+            if pattern.parent and pattern.parent in candidate_names:
+                candidate_names.add(pattern.name)
+
+        if not candidate_names:
+            return None
+
+        # Phase 2: score candidates with DOM-aware checks
+        candidates: list[dict] = []
+        for name in candidate_names:
+            pattern = cls._patterns[name]
+            p1_score, p1_matched = phase1_scores.get(name, (0, []))
+            p2_score, p2_matched, disqualified = cls._score_phase2(pattern, html)
+
+            candidates.append({
+                "pattern": pattern,
+                "phase1_score": p1_score,
+                "phase2_score": p2_score,
+                "disqualified": disqualified,
+                "matched_signals": p1_matched + p2_matched,
+            })
+
+        return cls._select_winner(candidates)
 
     @classmethod
     def detect_with_confidence(
