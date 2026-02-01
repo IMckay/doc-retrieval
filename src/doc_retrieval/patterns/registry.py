@@ -90,11 +90,14 @@ DOCUSAURUS_PATTERN = SitePattern(
     requires_js=True,
     wait_selector="article.markdown",
     click_tabs_selector='.openapi-tabs__code-container [role="tab"]',
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="meta_generator", value="docusaurus", weight=50, case_sensitive=False),
         DetectionSignal(kind="html_substring", value="__docusaurus", weight=30),
-        DetectionSignal(kind="html_substring", value="docMainContainer", weight=30),
-        DetectionSignal(kind="html_substring", value="docusaurus", weight=5, case_sensitive=False),
+        DetectionSignal(kind="html_substring", value="docMainContainer", weight=25),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value="article.markdown", weight=20),
+        Phase2Check(kind="css_present", value='[class*="docMainContainer"]', weight=20),
     ],
 )
 
@@ -115,10 +118,13 @@ GITBOOK_PATTERN = SitePattern(
     ],
     requires_js=True,
     wait_selector='[data-testid="page.contentEditor"], .markdown-section',
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="html_substring", value='data-testid="page.', weight=30),
         DetectionSignal(kind="html_substring", value="gitbook", weight=25, case_sensitive=False),
         DetectionSignal(kind="url_substring", value="gitbook.io", weight=25),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value='[data-testid="page.contentEditor"]', weight=20),
     ],
 )
 
@@ -139,12 +145,15 @@ READTHEDOCS_PATTERN = SitePattern(
         '[role="navigation"]',
     ],
     requires_js=False,
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="url_substring", value="readthedocs", weight=25),
         DetectionSignal(kind="url_substring", value=".rtfd.", weight=25),
         DetectionSignal(kind="html_substring", value="rst-content", weight=30),
         DetectionSignal(kind="html_substring", value="wy-nav-side", weight=30),
-        DetectionSignal(kind="meta_generator", value="sphinx", weight=25, case_sensitive=False),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value=".wy-nav-side", weight=20, required=True),
+        Phase2Check(kind="css_absent", value=".sphinxsidebar", weight=15),
     ],
 )
 
@@ -166,11 +175,13 @@ MKDOCS_PATTERN = SitePattern(
     ],
     requires_js=False,
     wait_selector='[role="main"]',
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="meta_generator", value="mkdocs", weight=50, case_sensitive=False),
         DetectionSignal(kind="html_substring", value='class="md-content"', weight=30),
         DetectionSignal(kind="html_substring", value="md-sidebar", weight=25),
-        DetectionSignal(kind="html_substring", value="mkdocs", weight=5, case_sensitive=False),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value=".md-content", weight=20),
     ],
 )
 
@@ -190,17 +201,22 @@ SPHINX_PATTERN = SitePattern(
         ".headerlink",
     ],
     requires_js=False,
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="meta_generator", value="sphinx", weight=50, case_sensitive=False),
         DetectionSignal(kind="html_substring", value="sphinxsidebar", weight=30),
         DetectionSignal(kind="html_substring", value="sphinx.pocoo.org", weight=30),
-        DetectionSignal(kind="html_substring", value="sphinx", weight=5, case_sensitive=False),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value='[role="main"]', weight=15),
+        Phase2Check(kind="css_present", value=".document", weight=15),
     ],
 )
 
 DOCUSAURUS_OPENAPI_PATTERN = SitePattern(
     name="docusaurus-openapi",
     description="Docusaurus sites with docusaurus-openapi-docs plugin",
+    parent="docusaurus",
+    specificity=1,
     content_selectors=[
         "article .theme-doc-markdown",
         "article.markdown",
@@ -229,15 +245,12 @@ DOCUSAURUS_OPENAPI_PATTERN = SitePattern(
     wait_selector=".openapi-left-panel__container, article.markdown",
     wait_time_ms=500,
     click_tabs_selector='.openapi-tabs__code-container [role="tab"]',
-    detection_signals=[
-        DetectionSignal(kind="meta_generator", value="docusaurus", weight=50, case_sensitive=False),
-        DetectionSignal(kind="html_substring", value="__docusaurus", weight=30),
-        DetectionSignal(kind="html_substring", value="openapi-left-panel__container", weight=30),
-        DetectionSignal(kind="html_substring", value="openapi-schema__property", weight=30),
-        DetectionSignal(kind="html_substring", value="docusaurus-openapi", weight=30),
-        DetectionSignal(kind="html_substring", value="docusaurus-plugin-openapi", weight=30),
-        DetectionSignal(kind="html_substring", value="openapi-explorer", weight=25),
-        DetectionSignal(kind="html_substring", value="plugin-content-docs-api", weight=25),
+    phase1_signals=[],  # Inherits candidacy from parent (docusaurus)
+    phase2_checks=[
+        Phase2Check(kind="css_present", value=".openapi-left-panel__container", weight=30, required=True),
+        Phase2Check(kind="css_present", value=".openapi-schema__property", weight=20),
+        Phase2Check(kind="script_src_regex", value="docusaurus-openapi|plugin-content-docs-api", weight=20),
+        Phase2Check(kind="css_present", value=".openapi-explorer", weight=15),
     ],
 )
 
@@ -259,11 +272,13 @@ VITEPRESS_PATTERN = SitePattern(
     ],
     requires_js=True,
     wait_selector=".vp-doc",
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="meta_generator", value="vitepress", weight=50, case_sensitive=False),
         DetectionSignal(kind="html_substring", value="vp-doc", weight=30),
         DetectionSignal(kind="html_substring", value="VPSidebar", weight=25),
-        DetectionSignal(kind="html_substring", value="vitepress", weight=5, case_sensitive=False),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value=".vp-doc", weight=20),
     ],
 )
 
@@ -289,10 +304,12 @@ MINTLIFY_PATTERN = SitePattern(
     ],
     requires_js=True,
     wait_selector="#content-area, article",
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="meta_generator", value="mintlify", weight=50, case_sensitive=False),
         DetectionSignal(kind="html_substring", value="mintlify-", weight=30),
-        DetectionSignal(kind="html_substring", value="mintlify", weight=5, case_sensitive=False),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value="#content-area", weight=20),
     ],
 )
 
@@ -317,10 +334,12 @@ NEXTRA_PATTERN = SitePattern(
     ],
     requires_js=True,
     wait_selector="article, .nextra-content",
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="html_substring", value="nextra-content", weight=30),
         DetectionSignal(kind="html_substring", value="nx-prose", weight=30),
-        DetectionSignal(kind="html_substring", value="nextra", weight=10, case_sensitive=False),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value=".nextra-content", weight=20),
     ],
 )
 
@@ -339,9 +358,13 @@ SWAGGER_UI_PATTERN = SitePattern(
     requires_js=True,
     wait_selector=".swagger-ui .information-container, .swagger-ui .opblock",
     wait_time_ms=1000,
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="html_substring", value="swagger-ui", weight=30),
         DetectionSignal(kind="html_substring", value="swagger-ui-bundle", weight=25),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value=".swagger-ui", weight=20),
+        Phase2Check(kind="css_absent", value=".redoc-wrap", weight=10),
     ],
 )
 
@@ -360,11 +383,13 @@ REDOC_PATTERN = SitePattern(
     requires_js=True,
     wait_selector=".redoc-wrap, .api-content",
     wait_time_ms=1000,
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="html_substring", value="redoc-wrap", weight=30),
-        DetectionSignal(
-            kind="html_substring", value="redoc.standalone", weight=30, case_sensitive=False
-        ),
+        DetectionSignal(kind="html_substring", value="redoc.standalone", weight=30, case_sensitive=False),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value=".redoc-wrap", weight=20),
+        Phase2Check(kind="css_absent", value=".swagger-ui", weight=10),
     ],
 )
 
@@ -389,10 +414,11 @@ REDOCLY_REALM_PATTERN = SitePattern(
     ],
     requires_js=False,
     wait_selector="main",
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="html_substring", value="/runtime/browser-entry.js", weight=30),
         DetectionSignal(kind="html_substring", value="-redocly-", weight=25, case_sensitive=False),
     ],
+    phase2_checks=[],
 )
 
 STARLIGHT_PATTERN = SitePattern(
@@ -415,11 +441,13 @@ STARLIGHT_PATTERN = SitePattern(
     ],
     requires_js=False,
     wait_selector=".sl-markdown-content",
-    detection_signals=[
+    phase1_signals=[
         DetectionSignal(kind="meta_generator", value="starlight", weight=50, case_sensitive=False),
         DetectionSignal(kind="meta_generator", value="astro", weight=25, case_sensitive=False),
         DetectionSignal(kind="html_substring", value="sl-markdown-content", weight=30),
-        DetectionSignal(kind="html_substring", value="starlight", weight=5, case_sensitive=False),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value=".sl-markdown-content", weight=20),
     ],
 )
 
