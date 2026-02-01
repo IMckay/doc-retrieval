@@ -1,7 +1,37 @@
 """Site-specific extraction pattern registry."""
 
+from __future__ import annotations
 
-from pydantic import BaseModel
+import re
+
+from pydantic import BaseModel, Field
+
+
+class DetectionSignal(BaseModel):
+    """A single signal used to detect a site pattern."""
+
+    kind: str  # "url_substring" | "html_substring" | "meta_generator"
+    value: str
+    weight: int = 10
+    case_sensitive: bool = True
+
+
+class Phase2Check(BaseModel):
+    """A DOM-aware check used in Phase 2 detection."""
+
+    kind: str  # "css_present" | "css_absent" | "script_src_regex" | "content_min_length"
+    value: str
+    weight: int = 20
+    required: bool = False
+
+
+class DetectionResult(BaseModel):
+    """Result of confidence-scored pattern detection."""
+
+    pattern: SitePattern
+    score: int
+    confidence: float = Field(ge=0.0, le=1.0)
+    matched_signals: list[str]
 
 
 class SitePattern(BaseModel):
@@ -9,6 +39,8 @@ class SitePattern(BaseModel):
 
     name: str
     description: str
+    parent: str | None = None
+    specificity: int = 0
 
     content_selectors: list[str] = []
     remove_selectors: list[str] = []
@@ -18,6 +50,10 @@ class SitePattern(BaseModel):
     wait_selector: str | None = None
     wait_time_ms: int = 0
     click_tabs_selector: str | None = None
+
+    detection_signals: list[DetectionSignal] = []
+    phase1_signals: list[DetectionSignal] = []
+    phase2_checks: list[Phase2Check] = []
 
 
 DOCUSAURUS_PATTERN = SitePattern(
@@ -48,6 +84,12 @@ DOCUSAURUS_PATTERN = SitePattern(
     requires_js=True,
     wait_selector="article.markdown",
     click_tabs_selector='.openapi-tabs__code-container [role="tab"]',
+    detection_signals=[
+        DetectionSignal(kind="meta_generator", value="docusaurus", weight=50, case_sensitive=False),
+        DetectionSignal(kind="html_substring", value="__docusaurus", weight=30),
+        DetectionSignal(kind="html_substring", value="docMainContainer", weight=30),
+        DetectionSignal(kind="html_substring", value="docusaurus", weight=5, case_sensitive=False),
+    ],
 )
 
 GITBOOK_PATTERN = SitePattern(
@@ -67,6 +109,11 @@ GITBOOK_PATTERN = SitePattern(
     ],
     requires_js=True,
     wait_selector='[data-testid="page.contentEditor"], .markdown-section',
+    detection_signals=[
+        DetectionSignal(kind="html_substring", value='data-testid="page.', weight=30),
+        DetectionSignal(kind="html_substring", value="gitbook", weight=25, case_sensitive=False),
+        DetectionSignal(kind="url_substring", value="gitbook.io", weight=25),
+    ],
 )
 
 READTHEDOCS_PATTERN = SitePattern(
@@ -86,6 +133,13 @@ READTHEDOCS_PATTERN = SitePattern(
         '[role="navigation"]',
     ],
     requires_js=False,
+    detection_signals=[
+        DetectionSignal(kind="url_substring", value="readthedocs", weight=25),
+        DetectionSignal(kind="url_substring", value=".rtfd.", weight=25),
+        DetectionSignal(kind="html_substring", value="rst-content", weight=30),
+        DetectionSignal(kind="html_substring", value="wy-nav-side", weight=30),
+        DetectionSignal(kind="meta_generator", value="sphinx", weight=25, case_sensitive=False),
+    ],
 )
 
 MKDOCS_PATTERN = SitePattern(
@@ -106,6 +160,12 @@ MKDOCS_PATTERN = SitePattern(
     ],
     requires_js=False,
     wait_selector='[role="main"]',
+    detection_signals=[
+        DetectionSignal(kind="meta_generator", value="mkdocs", weight=50, case_sensitive=False),
+        DetectionSignal(kind="html_substring", value='class="md-content"', weight=30),
+        DetectionSignal(kind="html_substring", value="md-sidebar", weight=25),
+        DetectionSignal(kind="html_substring", value="mkdocs", weight=5, case_sensitive=False),
+    ],
 )
 
 SPHINX_PATTERN = SitePattern(
@@ -124,6 +184,12 @@ SPHINX_PATTERN = SitePattern(
         ".headerlink",
     ],
     requires_js=False,
+    detection_signals=[
+        DetectionSignal(kind="meta_generator", value="sphinx", weight=50, case_sensitive=False),
+        DetectionSignal(kind="html_substring", value="sphinxsidebar", weight=30),
+        DetectionSignal(kind="html_substring", value="sphinx.pocoo.org", weight=30),
+        DetectionSignal(kind="html_substring", value="sphinx", weight=5, case_sensitive=False),
+    ],
 )
 
 DOCUSAURUS_OPENAPI_PATTERN = SitePattern(
@@ -157,6 +223,16 @@ DOCUSAURUS_OPENAPI_PATTERN = SitePattern(
     wait_selector=".openapi-left-panel__container, article.markdown",
     wait_time_ms=500,
     click_tabs_selector='.openapi-tabs__code-container [role="tab"]',
+    detection_signals=[
+        DetectionSignal(kind="meta_generator", value="docusaurus", weight=50, case_sensitive=False),
+        DetectionSignal(kind="html_substring", value="__docusaurus", weight=30),
+        DetectionSignal(kind="html_substring", value="openapi-left-panel__container", weight=30),
+        DetectionSignal(kind="html_substring", value="openapi-schema__property", weight=30),
+        DetectionSignal(kind="html_substring", value="docusaurus-openapi", weight=30),
+        DetectionSignal(kind="html_substring", value="docusaurus-plugin-openapi", weight=30),
+        DetectionSignal(kind="html_substring", value="openapi-explorer", weight=25),
+        DetectionSignal(kind="html_substring", value="plugin-content-docs-api", weight=25),
+    ],
 )
 
 VITEPRESS_PATTERN = SitePattern(
@@ -177,6 +253,12 @@ VITEPRESS_PATTERN = SitePattern(
     ],
     requires_js=True,
     wait_selector=".vp-doc",
+    detection_signals=[
+        DetectionSignal(kind="meta_generator", value="vitepress", weight=50, case_sensitive=False),
+        DetectionSignal(kind="html_substring", value="vp-doc", weight=30),
+        DetectionSignal(kind="html_substring", value="VPSidebar", weight=25),
+        DetectionSignal(kind="html_substring", value="vitepress", weight=5, case_sensitive=False),
+    ],
 )
 
 MINTLIFY_PATTERN = SitePattern(
@@ -201,6 +283,11 @@ MINTLIFY_PATTERN = SitePattern(
     ],
     requires_js=True,
     wait_selector="#content-area, article",
+    detection_signals=[
+        DetectionSignal(kind="meta_generator", value="mintlify", weight=50, case_sensitive=False),
+        DetectionSignal(kind="html_substring", value="mintlify-", weight=30),
+        DetectionSignal(kind="html_substring", value="mintlify", weight=5, case_sensitive=False),
+    ],
 )
 
 NEXTRA_PATTERN = SitePattern(
@@ -224,6 +311,11 @@ NEXTRA_PATTERN = SitePattern(
     ],
     requires_js=True,
     wait_selector="article, .nextra-content",
+    detection_signals=[
+        DetectionSignal(kind="html_substring", value="nextra-content", weight=30),
+        DetectionSignal(kind="html_substring", value="nx-prose", weight=30),
+        DetectionSignal(kind="html_substring", value="nextra", weight=10, case_sensitive=False),
+    ],
 )
 
 SWAGGER_UI_PATTERN = SitePattern(
@@ -241,6 +333,10 @@ SWAGGER_UI_PATTERN = SitePattern(
     requires_js=True,
     wait_selector=".swagger-ui .information-container, .swagger-ui .opblock",
     wait_time_ms=1000,
+    detection_signals=[
+        DetectionSignal(kind="html_substring", value="swagger-ui", weight=30),
+        DetectionSignal(kind="html_substring", value="swagger-ui-bundle", weight=25),
+    ],
 )
 
 REDOC_PATTERN = SitePattern(
@@ -258,6 +354,39 @@ REDOC_PATTERN = SitePattern(
     requires_js=True,
     wait_selector=".redoc-wrap, .api-content",
     wait_time_ms=1000,
+    detection_signals=[
+        DetectionSignal(kind="html_substring", value="redoc-wrap", weight=30),
+        DetectionSignal(
+            kind="html_substring", value="redoc.standalone", weight=30, case_sensitive=False
+        ),
+    ],
+)
+
+REDOCLY_REALM_PATTERN = SitePattern(
+    name="redocly-realm",
+    description="Redocly Realm developer portals",
+    content_selectors=[
+        "main",
+        "article",
+        '[role="main"]',
+    ],
+    remove_selectors=[
+        "aside",
+        "nav",
+        "header",
+        "footer",
+        '[class*="Sidebar"]',
+        '[class*="Navbar"]',
+        '[class*="Footer"]',
+        '[class*="CopyForLlm"]',
+        '[class*="Breadcrumb"]',
+    ],
+    requires_js=False,
+    wait_selector="main",
+    detection_signals=[
+        DetectionSignal(kind="html_substring", value="/runtime/browser-entry.js", weight=30),
+        DetectionSignal(kind="html_substring", value="-redocly-", weight=25, case_sensitive=False),
+    ],
 )
 
 STARLIGHT_PATTERN = SitePattern(
@@ -280,7 +409,36 @@ STARLIGHT_PATTERN = SitePattern(
     ],
     requires_js=False,
     wait_selector=".sl-markdown-content",
+    detection_signals=[
+        DetectionSignal(kind="meta_generator", value="starlight", weight=50, case_sensitive=False),
+        DetectionSignal(kind="meta_generator", value="astro", weight=25, case_sensitive=False),
+        DetectionSignal(kind="html_substring", value="sl-markdown-content", weight=30),
+        DetectionSignal(kind="html_substring", value="starlight", weight=5, case_sensitive=False),
+    ],
 )
+
+
+_DETECTION_THRESHOLD = 20
+
+_META_GENERATOR_RE = re.compile(
+    r'<meta\s+(?:'
+    r'name=["\']generator["\']\s+content=["\']([^"\']+)["\']'
+    r'|'
+    r'content=["\']([^"\']+)["\']\s+name=["\']generator["\']'
+    r')',
+    re.IGNORECASE,
+)
+
+
+def _extract_meta_generators(html: str) -> list[str]:
+    """Extract generator meta tag values from the first 5000 chars of HTML."""
+    head = html[:5000]
+    generators: list[str] = []
+    for m in _META_GENERATOR_RE.finditer(head):
+        value = m.group(1) or m.group(2)
+        if value:
+            generators.append(value)
+    return generators
 
 
 class PatternRegistry:
@@ -298,6 +456,7 @@ class PatternRegistry:
         "nextra": NEXTRA_PATTERN,
         "swagger-ui": SWAGGER_UI_PATTERN,
         "redoc": REDOC_PATTERN,
+        "redocly-realm": REDOCLY_REALM_PATTERN,
         "starlight": STARLIGHT_PATTERN,
     }
 
@@ -317,62 +476,67 @@ class PatternRegistry:
         return list(cls._patterns.values())
 
     @classmethod
-    def detect(cls, url: str, html: str) -> SitePattern | None:
-        """Auto-detect site type from URL or HTML content."""
+    def detect_with_confidence(
+        cls, url: str, html: str
+    ) -> DetectionResult | None:
+        """Score all patterns and return the highest scorer above threshold.
+
+        Returns None if no pattern scores at or above _DETECTION_THRESHOLD.
+        """
         url_lower = url.lower()
         html_lower = html.lower() if html else ""
+        generators = _extract_meta_generators(html) if html else []
+        generators_lower = [g.lower() for g in generators]
 
-        if "readthedocs" in url_lower or ".rtfd." in url_lower:
-            return cls._patterns.get("readthedocs")
+        best: DetectionResult | None = None
 
-        # Check HTML content for framework signatures
-        # Docusaurus OpenAPI must be checked before generic Docusaurus
-        if "docusaurus" in html_lower or "__docusaurus" in html:
-            # Check for OpenAPI plugin markers (rendered content or plugin assets)
-            openapi_markers = [
-                "openapi-schema__property",
-                "openapi-left-panel__container",
-                "openapi-markdown__details",
-                "docusaurus-openapi",
-                "openapi-explorer",
-                # Static HTML markers present even before JS renders
-                "docusaurus-plugin-openapi",
-                "plugin-content-docs-api",
-            ]
-            if any(marker in html for marker in openapi_markers):
-                return cls._patterns.get("docusaurus-openapi")
+        for pattern in cls._patterns.values():
+            if not pattern.detection_signals:
+                continue
 
-        if "docusaurus" in html_lower or "__docusaurus" in html:
-            return cls._patterns.get("docusaurus")
+            score = 0
+            matched: list[str] = []
+            max_possible = sum(s.weight for s in pattern.detection_signals)
 
-        if "gitbook" in html_lower or "data-testid=\"page." in html:
-            return cls._patterns.get("gitbook")
+            for signal in pattern.detection_signals:
+                hit = False
+                if signal.kind == "url_substring":
+                    target = url if signal.case_sensitive else url_lower
+                    value = signal.value if signal.case_sensitive else signal.value.lower()
+                    hit = value in target
+                elif signal.kind == "html_substring":
+                    target = html if signal.case_sensitive else html_lower
+                    value = signal.value if signal.case_sensitive else signal.value.lower()
+                    hit = value in target
+                elif signal.kind == "meta_generator":
+                    value = signal.value if signal.case_sensitive else signal.value.lower()
+                    source = generators if signal.case_sensitive else generators_lower
+                    hit = any(value in g for g in source)
 
-        if "mkdocs" in html_lower or "md-content" in html:
-            return cls._patterns.get("mkdocs")
+                if hit:
+                    score += signal.weight
+                    matched.append(f"{signal.kind}:{signal.value}")
 
-        if "sphinx" in html_lower or "sphinxsidebar" in html:
-            return cls._patterns.get("sphinx")
+            if score < _DETECTION_THRESHOLD:
+                continue
 
-        if "vitepress" in html_lower or "vp-doc" in html:
-            return cls._patterns.get("vitepress")
+            confidence = min(score / max(max_possible, 1), 1.0)
 
-        if "mintlify" in html_lower or "mintlify-" in html:
-            return cls._patterns.get("mintlify")
+            if best is None or score > best.score:
+                best = DetectionResult(
+                    pattern=pattern,
+                    score=score,
+                    confidence=confidence,
+                    matched_signals=matched,
+                )
 
-        if "nextra" in html_lower or "nx-prose" in html or "nextra-content" in html:
-            return cls._patterns.get("nextra")
+        return best
 
-        # Swagger UI: look for its characteristic container
-        if "swagger-ui" in html:
-            return cls._patterns.get("swagger-ui")
+    @classmethod
+    def detect(cls, url: str, html: str) -> SitePattern | None:
+        """Auto-detect site type from URL or HTML content.
 
-        # Redoc: look for its wrapper or bundle
-        if "redoc-wrap" in html or "redoc.standalone" in html_lower:
-            return cls._patterns.get("redoc")
-
-        # Starlight (Astro): look for its content class prefix
-        if "sl-markdown-content" in html or "starlight" in html_lower:
-            return cls._patterns.get("starlight")
-
-        return None
+        Thin wrapper around detect_with_confidence() for backward compatibility.
+        """
+        result = cls.detect_with_confidence(url, html)
+        return result.pattern if result else None

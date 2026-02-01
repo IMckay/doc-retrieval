@@ -1,8 +1,17 @@
 """Site-specific extraction patterns."""
 
-from doc_retrieval.patterns.registry import PatternRegistry, SitePattern
+from doc_retrieval.patterns.registry import (
+    DetectionResult,
+    DetectionSignal,
+    PatternRegistry,
+    Phase2Check,
+    SitePattern,
+)
 
 __all__ = [
-    "SitePattern",
+    "DetectionResult",
+    "DetectionSignal",
     "PatternRegistry",
+    "Phase2Check",
+    "SitePattern",
 ]
