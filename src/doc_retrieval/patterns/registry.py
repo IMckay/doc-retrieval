@@ -421,6 +421,8 @@ STARLIGHT_PATTERN = SitePattern(
 
 _DETECTION_THRESHOLD = 20
 
+CONFIDENCE_NORMALIZER = 100
+
 _META_GENERATOR_RE = re.compile(
     r'<meta\s+(?:'
     r'name=["\']generator["\']\s+content=["\']([^"\']+)["\']'
@@ -586,6 +588,61 @@ class PatternRegistry:
                 disqualified = True
 
         return score, matched, disqualified
+
+    @classmethod
+    def _select_winner(
+        cls, candidates: list[dict]
+    ) -> DetectionResult | None:
+        """Select the winning pattern from scored candidates.
+
+        Each candidate dict has keys: pattern, phase1_score, phase2_score,
+        disqualified, matched_signals.
+
+        Rules:
+        1. Disqualified patterns are excluded.
+        2. Group by family (parent chain root).
+        3. Within each family, most-specific wins.
+        4. Across families, highest combined score wins.
+        5. Ties broken by specificity.
+        """
+        # Filter out disqualified
+        viable = [c for c in candidates if not c["disqualified"]]
+        if not viable:
+            return None
+
+        # Group by family root
+        families: dict[str, list[dict]] = {}
+        for c in viable:
+            root = c["pattern"].parent or c["pattern"].name
+            families.setdefault(root, []).append(c)
+
+        # Pick best per family (highest specificity)
+        family_winners: list[dict] = []
+        for members in families.values():
+            members.sort(key=lambda c: c["pattern"].specificity, reverse=True)
+            family_winners.append(members[0])
+
+        # Pick overall winner: highest total score, ties broken by specificity
+        family_winners.sort(
+            key=lambda c: (
+                c["phase1_score"] + c["phase2_score"],
+                c["pattern"].specificity,
+            ),
+            reverse=True,
+        )
+
+        best = family_winners[0]
+        total = best["phase1_score"] + best["phase2_score"]
+        confidence = min(1.0, total / CONFIDENCE_NORMALIZER)
+
+        all_matched = best["matched_signals"]
+
+        return DetectionResult(
+            pattern=best["pattern"],
+            score=total,
+            confidence=confidence,
+            matched_signals=all_matched,
+        )
 
     @classmethod
     def detect_with_confidence(
