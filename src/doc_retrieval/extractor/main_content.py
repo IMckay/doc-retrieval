@@ -39,7 +39,7 @@ class ContentExtractor:
         # Try targeted soup extraction first when we have content selectors.
         # Soup preserves spacing and structure better than trafilatura for
         # sites where our CSS selectors match (e.g. Docusaurus, ReadTheDocs).
-        content = self._extract_with_soup(cleaned_html, require_selector=True)
+        content = self._extract_with_soup(cleaned_html, url=url, require_selector=True)
         if content and content.text and len(content.text) >= self.config.min_content_length:
             content = self._clean_content(content)
             content.extraction_method = "css_selector"
@@ -56,7 +56,7 @@ class ContentExtractor:
         if not content or (content.text and len(content.text) < self.config.min_content_length):
             # Final fallback: soup with body-level extraction
             method = "beautifulsoup"
-            content = self._extract_with_soup(cleaned_html)
+            content = self._extract_with_soup(cleaned_html, url=url)
 
         if content:
             content = self._clean_content(content)
@@ -169,7 +169,7 @@ class ContentExtractor:
         return None
 
     def _extract_with_soup(
-        self, html: str, require_selector: bool = False
+        self, html: str, url: str = "", require_selector: bool = False
     ) -> ExtractedContent | None:
         """Custom extraction with BeautifulSoup.
 
@@ -195,6 +195,9 @@ class ContentExtractor:
                 main = soup.select_one(selector)
                 if main:
                     break
+
+            if main:
+                main = self._narrow_to_section(main, url)
 
             # Docusaurus category/index page fallbacks
             if not main:
@@ -228,6 +231,30 @@ class ContentExtractor:
             logger.debug("BeautifulSoup extraction failed", exc_info=True)
 
         return None
+
+    def _narrow_to_section(self, container, url: str):
+        """Narrow to URL-specific section within a single-page app container."""
+        template = self.config.section_selector_template
+        if not template:
+            return container
+
+        # Build combined pattern list: section_url_patterns + legacy singular field
+        patterns = list(self.config.section_url_patterns)
+        if self.config.section_url_pattern and self.config.section_url_pattern not in patterns:
+            patterns.append(self.config.section_url_pattern)
+        if not patterns:
+            return container
+
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                section_id = match.group(1)
+                selector = template.format(section=section_id)
+                section = container.select_one(selector)
+                if section:
+                    return section
+                logger.debug("Section selector '%s' not found for %s", selector, url)
+        return container
 
     # Elements that should never be removed even if they appear empty
     # (their children or attributes carry semantic meaning).

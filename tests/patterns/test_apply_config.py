@@ -92,3 +92,116 @@ class TestApplyToConfig:
         )
         result = PatternRegistry.apply_to_config("_test_no_js", config)
         assert result.fetcher.use_js is False
+
+    def test_section_fields_propagate(self):
+        """Section extraction fields from pattern fill into extractor config."""
+        p = SitePattern(
+            name="_test_section",
+            description="Section test",
+            content_selectors=[".api-content"],
+            section_url_pattern=r"/api/(.+)$",
+            section_selector_template='[id="{section}"]',
+        )
+        PatternRegistry.register(p)
+        config = AppConfig(base_url="https://example.com")
+        result = PatternRegistry.apply_to_config("_test_section", config)
+        assert result.extractor.section_url_pattern == r"/api/(.+)$"
+        assert result.extractor.section_selector_template == '[id="{section}"]'
+
+    def test_section_fields_not_overridden_when_set(self):
+        """Explicit user section fields are not overridden by pattern."""
+        p = SitePattern(
+            name="_test_section2",
+            description="Section test 2",
+            content_selectors=[".api-content"],
+            section_url_pattern=r"/api/(.+)$",
+            section_selector_template='[id="{section}"]',
+        )
+        PatternRegistry.register(p)
+        config = AppConfig(
+            base_url="https://example.com",
+            extractor=ExtractorConfig(
+                section_url_pattern=r"/custom/(.+)$",
+                section_selector_template='[data-id="{section}"]',
+            ),
+        )
+        result = PatternRegistry.apply_to_config("_test_section2", config)
+        assert result.extractor.section_url_pattern == r"/custom/(.+)$"
+        assert result.extractor.section_selector_template == '[data-id="{section}"]'
+
+    def test_pattern_without_section_fields_leaves_none(self):
+        """Patterns without section fields leave extractor defaults (None)."""
+        config = AppConfig(base_url="https://example.com")
+        result = PatternRegistry.apply_to_config("_test_apply", config)
+        assert result.extractor.section_url_pattern is None
+        assert result.extractor.section_selector_template is None
+
+    def test_section_url_patterns_propagate(self):
+        """Multi-pattern section_url_patterns propagate through apply_to_config."""
+        p = SitePattern(
+            name="_test_multi_section",
+            description="Multi-section test",
+            content_selectors=[".api-content"],
+            section_url_patterns=[
+                r"/references/.+?/api\.[^/]+/(.+)$",
+                r"/guides/.+?/api(?:-[^/]+)?/(.+)$",
+            ],
+            section_selector_template='[id="{section}"]',
+        )
+        PatternRegistry.register(p)
+        config = AppConfig(base_url="https://example.com")
+        result = PatternRegistry.apply_to_config("_test_multi_section", config)
+        assert result.extractor.section_url_patterns == [
+            r"/references/.+?/api\.[^/]+/(.+)$",
+            r"/guides/.+?/api(?:-[^/]+)?/(.+)$",
+        ]
+
+    def test_section_url_patterns_not_overridden_when_set(self):
+        """Explicit user section_url_patterns are not overridden by pattern."""
+        p = SitePattern(
+            name="_test_multi_section2",
+            description="Multi-section test 2",
+            content_selectors=[".api-content"],
+            section_url_patterns=[r"/pattern/(.+)$"],
+        )
+        PatternRegistry.register(p)
+        config = AppConfig(
+            base_url="https://example.com",
+            extractor=ExtractorConfig(
+                section_url_patterns=[r"/custom/(.+)$"],
+            ),
+        )
+        result = PatternRegistry.apply_to_config("_test_multi_section2", config)
+        assert result.extractor.section_url_patterns == [r"/custom/(.+)$"]
+
+    def test_markdown_cleanup_patterns_propagate(self):
+        """markdown_cleanup_patterns propagate through apply_to_config."""
+        p = SitePattern(
+            name="_test_cleanup",
+            description="Cleanup test",
+            content_selectors=[".content"],
+            markdown_cleanup_patterns=[r"(?m)^REMOVE_ME$"],
+        )
+        PatternRegistry.register(p)
+        config = AppConfig(base_url="https://example.com")
+        result = PatternRegistry.apply_to_config("_test_cleanup", config)
+        assert result.extractor.markdown_cleanup_patterns == [r"(?m)^REMOVE_ME$"]
+
+    def test_markdown_cleanup_patterns_always_override(self):
+        """markdown_cleanup_patterns from pattern always apply (no guard on existing)."""
+        p = SitePattern(
+            name="_test_cleanup2",
+            description="Cleanup test 2",
+            content_selectors=[".content"],
+            markdown_cleanup_patterns=[r"(?m)^PATTERN_VALUE$"],
+        )
+        PatternRegistry.register(p)
+        config = AppConfig(
+            base_url="https://example.com",
+            extractor=ExtractorConfig(
+                markdown_cleanup_patterns=[r"(?m)^USER_VALUE$"],
+            ),
+        )
+        result = PatternRegistry.apply_to_config("_test_cleanup2", config)
+        # Pattern always overrides for cleanup patterns
+        assert result.extractor.markdown_cleanup_patterns == [r"(?m)^PATTERN_VALUE$"]

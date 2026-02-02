@@ -32,6 +32,8 @@ from doc_retrieval.discovery import (
 from doc_retrieval.discovery.base import BaseDiscoverer
 from doc_retrieval.patterns import PatternRegistry
 from doc_retrieval.patterns.registry import DetectionResult
+from doc_retrieval.scanner import NavScanner, NavSection, NavSubSection, SiteStructure
+from doc_retrieval.scanner.nav_scanner import auto_expand_sections, derive_sub_sections
 
 
 @dataclass
@@ -86,7 +88,7 @@ class InteractiveExtractor:
         ))
         self.console.print()
 
-        # Step 1: Analyze the site
+        # Step 1: Analyze — fetch, detect pattern, JS decision, nav scan
         self.console.print("[bold]Step 1:[/bold] Analyzing site...")
         site_info = await self._analyze_site(url)
 
@@ -94,33 +96,41 @@ class InteractiveExtractor:
             self.console.print("[red]Failed to access the site. Please check the URL.[/red]")
             return None
 
-        # Step 2: Detect or ask for site pattern
         pattern = await self._detect_or_ask_pattern(site_info)
-
-        # Step 3: Determine if JS rendering is needed
         use_js = await self._ask_js_rendering(site_info, pattern)
+        section_include, section_exclude = await self._scan_site_structure(
+            site_info, pattern, use_js
+        )
 
-        # Step 4: Choose discovery method and discover URLs
-        discovery_mode, urls = await self._discover_urls(url, pattern, use_js)
+        # Step 2: Discover URLs (scoped by selected sections)
+        discovery_mode, urls = await self._discover_urls(
+            url, pattern, use_js,
+            include_pattern=section_include,
+            exclude_pattern=section_exclude,
+        )
 
         if not urls:
             self.console.print("[yellow]No pages found to extract.[/yellow]")
             return None
 
-        # Step 5: Let user filter/refine URL list
+        # Step 3: Refine URL list
         urls, include_pattern, exclude_pattern = await self._refine_urls(urls)
+
+        # Merge section-scoping patterns with URL refinement patterns
+        include_pattern = self._merge_patterns(section_include, include_pattern)
+        exclude_pattern = self._merge_patterns(section_exclude, exclude_pattern)
 
         if not urls:
             self.console.print("[yellow]No pages selected for extraction.[/yellow]")
             return None
 
-        # Step 6: Choose output options
+        # Step 4: Output options
         output_mode, output_path = await self._ask_output_options(url)
 
-        # Step 7: Rate-limit / performance settings
+        # Step 5: Rate-limit / performance settings
         max_concurrent, delay_seconds = await self._ask_rate_limit(len(urls))
 
-        # Step 8: Confirm and build config
+        # Step 6: Confirm and extract
         config = self._build_config(
             url=url,
             discovery_mode=discovery_mode,
@@ -964,15 +974,661 @@ class InteractiveExtractor:
         if len(urls) > limit:
             self.console.print(f"  [dim]... and {len(urls) - limit} more[/dim]")
 
+    # ------------------------------------------------------------------
+    # Section scanning & selection
+    # ------------------------------------------------------------------
+
+    async def _scan_site_structure(
+        self,
+        site_info: dict,
+        pattern: str | None,
+        use_js: bool,
+    ) -> tuple[str | None, str | None]:
+        """Scan nav structure, present section choices, return (include, exclude) patterns."""
+        self.console.print("  Scanning site structure...")
+
+        pattern_obj = PatternRegistry.get(pattern) if pattern else None
+        scanner = NavScanner(site_info["final_url"], pattern_obj)
+        structure = scanner.scan(site_info["html"])
+
+        # Heuristic: if nav elements exist but have no links, try JS probe
+        if not structure.sections and use_js and not site_info.get("js_rendered"):
+            js_html = await self._playwright_probe(site_info["final_url"])
+            if js_html:
+                structure = scanner.scan(js_html)
+
+        if not structure.sections:
+            self.console.print(
+                "[dim]No distinct sections detected in navigation. "
+                "Skipping section selection.[/dim]"
+            )
+            return None, None
+
+        # Quick sitemap probe for page count estimates
+        structure = await self._enrich_section_counts(
+            scanner, structure, site_info["final_url"]
+        )
+
+        # Auto-expand large or few sections into sub-sections
+        structure = auto_expand_sections(structure)
+
+        if len(structure.sections) == 1:
+            s = structure.sections[0]
+            # If the single section has sub-sections, still show the UI
+            if s.sub_sections:
+                self.console.print(
+                    f"[dim]Single section detected: {s.label} ({s.path_prefix})"
+                    f" with {len(s.sub_sections)} sub-sections.[/dim]"
+                )
+            else:
+                self.console.print(
+                    f"[dim]Single section detected: {s.label} ({s.path_prefix}). "
+                    f"Proceeding with full site.[/dim]"
+                )
+                return None, None
+
+        # Show section selection UI
+        return await self._section_selection_ui(structure)
+
+    async def _enrich_section_counts(
+        self,
+        scanner: NavScanner,
+        structure: SiteStructure,
+        url: str,
+    ) -> SiteStructure:
+        """Do a quick sitemap fetch to estimate page counts per section."""
+        try:
+            config = DiscoveryConfig(mode=DiscoveryMode.SITEMAP, max_pages=0)
+            discoverer: BaseDiscoverer = SitemapDiscoverer(url, config)
+            sitemap_urls: list[str] = []
+            async for discovered in discoverer.discover():
+                sitemap_urls.append(discovered.url)
+                if len(sitemap_urls) >= 5000:
+                    break
+            if sitemap_urls:
+                structure = scanner.enrich_with_sitemap(structure, sitemap_urls)
+        except Exception:
+            pass
+        return structure
+
+    _SUB_DISPLAY_LIMIT = 10
+
+    def _display_sections_table(
+        self, sections: list[NavSection], *, expand_section: int | None = None,
+    ) -> None:
+        """Render the section selection table with indented sub-sections.
+
+        Args:
+            expand_section: If set, show all sub-sections for this 0-based
+                section index instead of truncating at ``_SUB_DISPLAY_LIMIT``.
+        """
+        table = Table(show_header=True, header_style="dim")
+        table.add_column("#", style="dim", width=6)
+        table.add_column("Section", style="cyan")
+        table.add_column("Path", style="dim")
+        table.add_column("Est. Pages", justify="right")
+        table.add_column("Status", justify="center")
+
+        total_est = 0
+        for i, s in enumerate(sections):
+            pages_str = str(s.estimated_pages) if s.estimated_pages else "?"
+            if s.estimated_pages:
+                total_est += s.estimated_pages
+            status = "[green]included[/green]" if s.selected else "[red]EXCLUDED[/red]"
+            table.add_row(str(i + 1), s.label, s.path_prefix, pages_str, status)
+
+            # Show sub-sections as indented rows.
+            # Always show all selected subs; only truncate excluded ones.
+            if i == expand_section:
+                visible_indices: set[int] = set(range(len(s.sub_sections)))
+            else:
+                # Budget: show all selected, fill remaining slots with excluded
+                excluded_shown = 0
+                excluded_budget = max(
+                    0,
+                    self._SUB_DISPLAY_LIMIT
+                    - sum(1 for sub in s.sub_sections if sub.selected),
+                )
+                visible_indices = set()
+                for j, sub in enumerate(s.sub_sections):
+                    if sub.selected:
+                        visible_indices.add(j)
+                    elif excluded_shown < excluded_budget:
+                        visible_indices.add(j)
+                        excluded_shown += 1
+
+            for j, sub in enumerate(s.sub_sections):
+                if j not in visible_indices:
+                    continue
+                letter = chr(ord("a") + j)
+                sub_num = f"{i + 1}{letter}"
+                sub_label = f"  {sub.label}"
+                sub_path = f"  {sub.path_prefix}"
+                sub_pages = str(sub.estimated_pages) if sub.estimated_pages else "?"
+                sub_status = (
+                    "[green]included[/green]" if sub.selected
+                    else "[red]EXCLUDED[/red]"
+                )
+                table.add_row(sub_num, sub_label, sub_path, sub_pages, sub_status)
+
+            hidden_subs = [
+                sub for j, sub in enumerate(s.sub_sections)
+                if j not in visible_indices
+            ]
+            if hidden_subs:
+                overflow_pages = sum(sub.estimated_pages for sub in hidden_subs)
+                all_sel = all(sub.selected for sub in hidden_subs)
+                none_sel = not any(sub.selected for sub in hidden_subs)
+                if all_sel:
+                    overflow_status = "[green]included[/green]"
+                elif none_sel:
+                    overflow_status = "[red]EXCLUDED[/red]"
+                else:
+                    overflow_status = "[yellow]partial[/yellow]"
+                table.add_row(
+                    "", f"  [dim]... {len(hidden_subs)} more sub-sections[/dim]",
+                    "", str(overflow_pages), overflow_status,
+                )
+
+        self.console.print(table)
+
+        # Compute effective selected pages (respecting sub-section selections)
+        total_selected = 0
+        for s in sections:
+            if s.sub_sections:
+                total_selected += sum(
+                    sub.estimated_pages for sub in s.sub_sections if sub.selected
+                )
+            elif s.selected and s.estimated_pages:
+                total_selected += s.estimated_pages
+
+        included = sum(1 for s in sections if s.selected)
+        total_pages_str = f"~{total_selected}" if total_selected else "unknown"
+        self.console.print(
+            f"\n  [green]{included} sections selected[/green]"
+            f"  [dim]|[/dim]  Total: {total_pages_str} pages"
+        )
+
+    _SUB_RE = re.compile(r"^(\d+)([a-z])$")
+
+    def _show_section_recommendations(self, sections: list[NavSection]) -> None:
+        """Show hints for large sections, dominant sub-sections, and high totals."""
+        hints: list[str] = []
+
+        # Compute effective selected pages (respecting sub-section selections)
+        total_pages = 0
+        for s in sections:
+            if s.sub_sections:
+                total_pages += sum(
+                    sub.estimated_pages for sub in s.sub_sections if sub.selected
+                )
+            elif s.selected:
+                total_pages += s.estimated_pages or 0
+
+        for i, s in enumerate(sections):
+            # Effective pages for this section
+            if s.sub_sections:
+                pages = sum(
+                    sub.estimated_pages for sub in s.sub_sections if sub.selected
+                )
+            else:
+                pages = s.estimated_pages or 0
+
+            if pages > 1000 and s.sub_sections:
+                hints.append(
+                    f"Section '{s.label}' has ~{pages} selected pages"
+                    " — sub-sections shown for granular selection."
+                )
+                # Check for dominant sub-section (skip excluded)
+                for j, sub in enumerate(s.sub_sections):
+                    if not sub.selected:
+                        continue
+                    if pages > 0 and sub.estimated_pages / pages > 0.6:
+                        pct = int(sub.estimated_pages / pages * 100)
+                        letter = chr(ord("a") + j)
+                        addr = f"{i + 1}{letter}"
+                        hints.append(
+                            f"  Sub-section '{sub.label}' contains"
+                            f" ~{sub.estimated_pages} pages"
+                            f" ({pct}% of '{s.label}')."
+                            f" Use 'drill {addr}' to explore further."
+                        )
+
+        if total_pages > 2000:
+            hints.append(
+                f"Selected ~{total_pages} pages total."
+                " Consider narrowing to reduce extraction time."
+            )
+
+        if hints:
+            self.console.print("\n[bold]Recommendations:[/bold]")
+            for hint in hints:
+                self.console.print(f"  [dim]*[/dim] {hint}")
+
+    def _parse_sub_section_address(
+        self, token: str
+    ) -> tuple[int, int] | None:
+        """Parse '2a' into (section_index, sub_section_index) or None."""
+        m = self._SUB_RE.match(token)
+        if not m:
+            return None
+        sec_idx = int(m.group(1)) - 1
+        sub_idx = ord(m.group(2)) - ord("a")
+        return sec_idx, sub_idx
+
+    def _toggle_parent_cascade(
+        self, section: NavSection, new_state: bool
+    ) -> None:
+        """Set section and all its sub-sections to *new_state*."""
+        section.selected = new_state
+        for sub in section.sub_sections:
+            sub.selected = new_state
+
+    async def _section_selection_ui(
+        self,
+        structure: SiteStructure,
+    ) -> tuple[str | None, str | None]:
+        """Interactive section toggle/drill UI. Returns (include_pattern, exclude_pattern)."""
+        sections = structure.sections
+        sitemap_urls = structure.sitemap_urls
+        self._display_sections_table(sections)
+
+        # Version bloat detection and filtering
+        if sitemap_urls:
+            bloat = self._detect_version_bloat(sections, sitemap_urls)
+            if bloat:
+                if self._offer_version_filtering(sections, bloat):
+                    self._sort_sub_sections(sections)
+                    self._display_sections_table(sections)
+
+        has_subs = any(s.sub_sections for s in sections)
+        if has_subs:
+            self._show_section_recommendations(sections)
+
+        sub_hint = " or sub-section (2a,2c)" if has_subs else ""
+        show_hint = ", 'show 2'" if has_subs else ""
+        self.console.print(
+            f"\n[dim]Commands: toggle by number (1,3){sub_hint}, "
+            f"'all', 'none', 'drill N' or 'drill 2a'{show_hint}, 'done'[/dim]"
+        )
+
+        while True:
+            choice = Prompt.ask("Section select", default="done").strip().lower()
+
+            if choice == "done":
+                break
+            elif choice == "all":
+                for s in sections:
+                    self._toggle_parent_cascade(s, True)
+                self._display_sections_table(sections)
+            elif choice == "none":
+                for s in sections:
+                    self._toggle_parent_cascade(s, False)
+                self._display_sections_table(sections)
+            elif choice.startswith("drill"):
+                self._drill_into_section(sections, choice, sitemap_urls)
+            elif choice.startswith("show"):
+                parts = choice.split()
+                if len(parts) == 2:
+                    try:
+                        idx = int(parts[1]) - 1
+                        if 0 <= idx < len(sections) and sections[idx].sub_sections:
+                            self._display_sections_table(sections, expand_section=idx)
+                        elif 0 <= idx < len(sections):
+                            self.console.print(
+                                "[dim]That section has no sub-sections.[/dim]"
+                            )
+                        else:
+                            self.console.print("[yellow]Section number out of range.[/yellow]")
+                    except ValueError:
+                        self.console.print("[yellow]Usage: show N (e.g. 'show 2')[/yellow]")
+                else:
+                    self.console.print("[yellow]Usage: show N (e.g. 'show 2')[/yellow]")
+            else:
+                changed = False
+                for token in choice.replace(",", " ").split():
+                    token = token.strip()
+                    if not token:
+                        continue
+                    sub_addr = self._parse_sub_section_address(token)
+                    if sub_addr is not None:
+                        sec_idx, sub_idx = sub_addr
+                        if 0 <= sec_idx < len(sections):
+                            subs = sections[sec_idx].sub_sections
+                            if 0 <= sub_idx < len(subs):
+                                subs[sub_idx].selected = not subs[sub_idx].selected
+                                changed = True
+                            else:
+                                self.console.print(
+                                    f"[yellow]No sub-section '{token}'[/yellow]"
+                                )
+                        else:
+                            self.console.print(
+                                f"[yellow]Section {sec_idx + 1} out of range[/yellow]"
+                            )
+                    else:
+                        indices = self._parse_group_selection(token, len(sections))
+                        if indices:
+                            for idx in indices:
+                                new_state = not sections[idx].selected
+                                self._toggle_parent_cascade(sections[idx], new_state)
+                            changed = True
+                if changed:
+                    self._display_sections_table(sections)
+
+        return self._sections_to_patterns(sections)
+
+    def _drill_into_section(
+        self,
+        sections: list[NavSection],
+        choice: str,
+        sitemap_urls: list[str],
+    ) -> None:
+        """Handle 'drill N' or 'drill Na' to expand sub-sections from sitemap data."""
+        parts = choice.split()
+        if len(parts) != 2:
+            self.console.print(
+                "[yellow]Usage: drill N or drill 2a (e.g. 'drill 1', 'drill 2a')[/yellow]"
+            )
+            return
+
+        target = parts[1]
+
+        if not sitemap_urls:
+            self.console.print("[yellow]No sitemap data available for drilling.[/yellow]")
+            return
+
+        # Try parsing as sub-section address (e.g. "2a")
+        sub_addr = self._parse_sub_section_address(target)
+        if sub_addr is not None:
+            self._drill_sub_section(sections, sub_addr, sitemap_urls)
+            return
+
+        # Otherwise parse as plain section number
+        try:
+            idx = int(target) - 1
+        except ValueError:
+            self.console.print("[yellow]Invalid section number.[/yellow]")
+            return
+        if idx < 0 or idx >= len(sections):
+            self.console.print("[yellow]Section number out of range.[/yellow]")
+            return
+
+        section = sections[idx]
+
+        # If section already has sub-sections, hint to drill those instead
+        if section.sub_sections:
+            self.console.print(
+                f"[dim]Sub-sections already shown for '{section.label}'."
+                f" Use 'drill {idx + 1}a' to explore a specific sub-section.[/dim]"
+            )
+            return
+
+        # Derive sub-sections from sitemap
+        subs = derive_sub_sections(section, sitemap_urls)
+        if len(subs) < 2:
+            self.console.print(
+                f"[dim]No further sub-sections found within '{section.label}'.[/dim]"
+            )
+            return
+
+        # Attach sub-sections and re-display
+        section.sub_sections = subs
+        self.console.print(
+            f"[green]Found {len(subs)} sub-sections in '{section.label}'.[/green]"
+        )
+        self._display_sections_table(sections)
+
+    def _drill_sub_section(
+        self,
+        sections: list[NavSection],
+        addr: tuple[int, int],
+        sitemap_urls: list[str],
+    ) -> None:
+        """Expand a sub-section (e.g. 2a) into its children."""
+        sec_idx, sub_idx = addr
+        if sec_idx < 0 or sec_idx >= len(sections):
+            self.console.print("[yellow]Section number out of range.[/yellow]")
+            return
+        section = sections[sec_idx]
+        if sub_idx < 0 or sub_idx >= len(section.sub_sections):
+            self.console.print("[yellow]Sub-section not found.[/yellow]")
+            return
+
+        sub = section.sub_sections[sub_idx]
+
+        # Create a temporary NavSection to derive deeper sub-sections
+        tmp = NavSection(label=sub.label, url="", path_prefix=sub.path_prefix)
+        children = derive_sub_sections(tmp, sitemap_urls)
+        if len(children) < 2:
+            self.console.print(
+                f"[dim]No further sub-sections found within '{sub.label}'.[/dim]"
+            )
+            return
+
+        # Inherit selected state from the replaced sub-section
+        for child in children:
+            child.selected = sub.selected
+
+        # Replace the single sub-section with its children
+        section.sub_sections[sub_idx:sub_idx + 1] = children
+        self.console.print(
+            f"[green]Expanded '{sub.label}' into {len(children)} sub-sections.[/green]"
+        )
+        self._display_sections_table(sections)
+
+    def _detect_version_bloat(
+        self,
+        sections: list[NavSection],
+        sitemap_urls: list[str],
+    ) -> list[tuple[int, int, list[NavSubSection]]]:
+        """Detect sub-sections with heavy version bloat.
+
+        Returns a list of ``(sec_idx, sub_idx, children)`` tuples for each
+        sub-section that has ≥3 version-like children making up ≥50% of all
+        children, and ≥200 estimated pages.
+        """
+        results: list[tuple[int, int, list[NavSubSection]]] = []
+
+        for sec_idx, section in enumerate(sections):
+            for sub_idx, sub in enumerate(section.sub_sections):
+                if (sub.estimated_pages or 0) < 200:
+                    continue
+
+                # Derive children with relaxed filters to see everything
+                tmp = NavSection(label=sub.label, url="", path_prefix=sub.path_prefix)
+                children = derive_sub_sections(
+                    tmp, sitemap_urls, max_results=50, min_pages=1,
+                )
+                if len(children) < 3:
+                    continue
+
+                version_count = sum(
+                    1 for c in children
+                    if _VERSION_RE.match(c.path_prefix.rstrip("/").rsplit("/", 1)[-1])
+                )
+                if version_count >= 3 and version_count >= len(children) * 0.5:
+                    results.append((sec_idx, sub_idx, children))
+
+        return results
+
+    def _offer_version_filtering(
+        self,
+        sections: list[NavSection],
+        bloat: list[tuple[int, int, list[NavSubSection]]],
+    ) -> bool:
+        """Prompt user to filter version bloat in sub-sections.
+
+        Processes entries in **reverse index order** to avoid index shift issues
+        when replacing sub-sections with their children.
+
+        Returns True if any changes were made.
+        """
+        changed = False
+
+        # Sort by (sec_idx, sub_idx) descending so replacements don't shift indices
+        for sec_idx, sub_idx, children in sorted(bloat, key=lambda t: (t[0], t[1]), reverse=True):
+            section = sections[sec_idx]
+            sub = section.sub_sections[sub_idx]
+
+            # Partition children into version vs non-version
+            version_children: list[tuple[tuple[int, ...], NavSubSection]] = []
+            non_version_children: list[NavSubSection] = []
+            for child in children:
+                seg = child.path_prefix.rstrip("/").rsplit("/", 1)[-1]
+                if _VERSION_RE.match(seg):
+                    version_children.append((self._version_sort_key(seg), child))
+                else:
+                    non_version_children.append(child)
+
+            # Sort versions newest-first
+            version_children.sort(key=lambda t: t[0], reverse=True)
+
+            # Find latest stable version
+            latest_stable: NavSubSection | None = None
+            for _key, vc in version_children:
+                seg = vc.path_prefix.rstrip("/").rsplit("/", 1)[-1]
+                if self._is_stable_version(seg):
+                    latest_stable = vc
+                    break
+
+            # Build the prompt
+            version_pages = sum(vc.estimated_pages for _, vc in version_children)
+            non_version_label = (
+                " + ".join(c.label for c in non_version_children[:3])
+                if non_version_children else None
+            )
+            latest_label = (
+                latest_stable.path_prefix.rstrip("/").rsplit("/", 1)[-1]
+                if latest_stable else None
+            )
+
+            # Description line
+            self.console.print()
+            self.console.print(
+                f"[yellow]'{sub.label}' has {len(version_children)} API versions"
+                f" ({version_pages} pages).[/yellow]"
+            )
+
+            # Build keep description
+            keep_parts: list[str] = []
+            if non_version_label:
+                keep_parts.append(non_version_label)
+            if latest_label:
+                keep_parts.append(latest_label)
+            keep_desc = " + ".join(keep_parts) if keep_parts else "non-version sections"
+
+            accepted = Confirm.ask(
+                f"Keep only {keep_desc}, exclude old versions?",
+                default=True,
+            )
+            if not accepted:
+                continue
+
+            # Apply: mark non-version + latest stable as selected, old versions as excluded
+            for child in non_version_children:
+                child.selected = sub.selected  # inherit parent's state
+            for _key, vc in version_children:
+                if latest_stable and vc is latest_stable:
+                    vc.selected = sub.selected
+                else:
+                    vc.selected = False
+
+            # Build replacement list: non-version first, then all versions (selected order later)
+            replacement = non_version_children + [vc for _, vc in version_children]
+
+            # Replace the sub-section with its expanded children
+            section.sub_sections[sub_idx:sub_idx + 1] = replacement
+            changed = True
+
+        return changed
+
+    @staticmethod
+    def _sort_sub_sections(sections: list[NavSection]) -> None:
+        """Sort each section's sub-sections: selected first (by pages desc), then excluded."""
+        for section in sections:
+            if section.sub_sections:
+                section.sub_sections.sort(
+                    key=lambda s: (not s.selected, -(s.estimated_pages or 0))
+                )
+
+    @staticmethod
+    def _sections_to_patterns(
+        sections: list[NavSection],
+    ) -> tuple[str | None, str | None]:
+        """Convert selected sections into an include_pattern regex.
+
+        When a parent has sub-sections and not all are selected, emit include
+        patterns from the selected sub-section prefixes instead of the parent's.
+        When all sub-sections (or no sub-sections exist) are selected, use the
+        parent prefix as before.
+        """
+        all_selected = all(s.selected for s in sections)
+        all_subs_default = all(
+            all(sub.selected for sub in s.sub_sections)
+            for s in sections
+            if s.sub_sections
+        )
+        if all_selected and all_subs_default:
+            return None, None  # Nothing filtered
+
+        none_selected = not any(s.selected for s in sections)
+        if none_selected:
+            # All excluded — check if any sub-section is still selected
+            any_sub = any(
+                sub.selected
+                for s in sections
+                for sub in s.sub_sections
+            )
+            if not any_sub:
+                return None, None
+
+        prefixes: list[str] = []
+        for s in sections:
+            if not s.selected and not s.sub_sections:
+                continue
+            if not s.path_prefix or s.path_prefix == "/":
+                continue
+
+            if s.sub_sections:
+                selected_subs = [sub for sub in s.sub_sections if sub.selected]
+                all_subs_on = len(selected_subs) == len(s.sub_sections)
+                if s.selected and all_subs_on:
+                    # Parent selected, all subs on → use parent prefix
+                    prefixes.append(re.escape(s.path_prefix.rstrip("/")))
+                elif selected_subs:
+                    # Partial sub-selection → emit each selected sub-section
+                    for sub in selected_subs:
+                        prefixes.append(re.escape(sub.path_prefix.rstrip("/")))
+                # else: nothing selected for this section
+            elif s.selected:
+                prefixes.append(re.escape(s.path_prefix.rstrip("/")))
+
+        if not prefixes:
+            return None, None
+
+        include = "(" + "|".join(p + "(/|$)" for p in prefixes) + ")"
+        return include, None
+
     async def _discover_urls(
-        self, url: str, pattern: str | None, use_js: bool
+        self,
+        url: str,
+        pattern: str | None,
+        use_js: bool,
+        include_pattern: str | None = None,
+        exclude_pattern: str | None = None,
     ) -> tuple[DiscoveryMode, list[DiscoveredURL]]:
         """Discover URLs using sitemap or crawling."""
         self.console.print()
         self.console.print("[bold]Step 2:[/bold] Discovering pages...")
 
         self.console.print("  Checking for sitemap...")
-        config = DiscoveryConfig(mode=DiscoveryMode.SITEMAP, max_pages=0)
+        config = DiscoveryConfig(
+            mode=DiscoveryMode.SITEMAP,
+            max_pages=0,
+            include_pattern=include_pattern,
+            exclude_pattern=exclude_pattern,
+        )
         discoverer: BaseDiscoverer = SitemapDiscoverer(url, config)
 
         urls = []
@@ -1005,6 +1661,8 @@ class InteractiveExtractor:
             mode=DiscoveryMode.CRAWL,
             max_depth=max_depth,
             max_pages=max_pages if max_pages > 0 else 0,
+            include_pattern=include_pattern,
+            exclude_pattern=exclude_pattern,
         )
         discoverer = CrawlerDiscoverer(url, config)
 

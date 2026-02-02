@@ -196,7 +196,7 @@ def _import_hook(ref: str) -> Callable | None:
     module_path, _, func_name = ref.partition(":")
     try:
         module = importlib.import_module(module_path)
-        fn = getattr(module, func_name)
+        fn: Callable[..., Any] | None = getattr(module, func_name)
         if not callable(fn):
             logger.warning("Hook %s:%s is not callable", module_path, func_name)
             return None

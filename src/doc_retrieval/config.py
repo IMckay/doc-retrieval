@@ -1,9 +1,15 @@
 """Configuration management with Pydantic models."""
 
+import sys
 from enum import Enum
 from pathlib import Path
 
 from pydantic import BaseModel, Field
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 
 class DiscoveryMode(str, Enum):
@@ -96,6 +102,10 @@ class ExtractorConfig(BaseModel):
     include_tables: bool = True
     include_images: bool = True
     include_links: bool = True
+    section_url_pattern: str | None = None
+    section_selector_template: str | None = None
+    section_url_patterns: list[str] = Field(default_factory=list)
+    markdown_cleanup_patterns: list[str] = Field(default_factory=list)
 
 
 class ChunkConfig(BaseModel):
@@ -170,10 +180,6 @@ class AppConfig(BaseModel):
     @classmethod
     def from_toml(cls, path: Path) -> "AppConfig":
         """Load config from a TOML file."""
-        try:
-            import tomllib  # type: ignore[import-not-found]
-        except ModuleNotFoundError:
-            import tomli as tomllib  # type: ignore[import-not-found]
         with open(path, "rb") as f:
             data = tomllib.load(f)
         return cls.model_validate(data)
@@ -210,10 +216,6 @@ class BatchConfig(BaseModel):
     @classmethod
     def from_toml(cls, path: Path) -> "BatchConfig":
         """Load batch config from a TOML file."""
-        try:
-            import tomllib  # type: ignore[import-not-found]
-        except ModuleNotFoundError:
-            import tomli as tomllib  # type: ignore[import-not-found]
         with open(path, "rb") as f:
             data = tomllib.load(f)
         return cls.model_validate(data)

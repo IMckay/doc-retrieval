@@ -2,6 +2,7 @@
 
 import json
 from collections import Counter
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from doc_retrieval.converter.llm_formatter import FormattedPage
 def write_metrics(
     output_path: Path,
     pages: list[FormattedPage],
-    errors: list[tuple[str, str, str]],
+    errors: Sequence[tuple[str, str, str]],
     skipped: list[str],
     skipped_categories: list[str],
     timings: list,

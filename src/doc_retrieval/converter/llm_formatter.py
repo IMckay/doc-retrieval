@@ -33,9 +33,20 @@ class SiteInfo(BaseModel):
 class LLMFormatter:
     """Format content for optimal LLM consumption."""
 
-    def __init__(self, include_metadata: bool = True, include_toc: bool = True):
+    def __init__(
+        self,
+        include_metadata: bool = True,
+        include_toc: bool = True,
+        markdown_cleanup_patterns: list[str] | None = None,
+    ):
         self.include_metadata = include_metadata
         self.include_toc = include_toc
+        self._cleanup_patterns: list[tuple[re.Pattern, str]] = []
+        if markdown_cleanup_patterns:
+            for pat_str in markdown_cleanup_patterns:
+                compiled = re.compile(pat_str)
+                replacement = r"\1" if compiled.groups > 0 else ""
+                self._cleanup_patterns.append((compiled, replacement))
 
     def format_page(
         self,
@@ -217,6 +228,10 @@ class LLMFormatter:
 
         # Fix orphaned heading markers
         markdown = re.sub(r"(^|\n)(#{1,6})\s*\n+", r"\1\2 ", markdown)
+
+        # Apply pattern-driven cleanup (safety net for styled-component noise)
+        for pattern, replacement in self._cleanup_patterns:
+            markdown = pattern.sub(replacement, markdown)
 
         markdown = self._deduplicate_h1(markdown)
 

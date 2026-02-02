@@ -218,11 +218,11 @@ class PlaywrightFetcher(BaseFetcher):
 
         parsed = urlparse(url)
         origin = f"{parsed.scheme}://{parsed.netloc}"
-        pw_cookies = [
+        pw_cookies: list[dict[str, str]] = [
             {"name": name, "value": value, "url": origin}
             for name, value in self._pending_cookies.items()
         ]
-        await self._context.add_cookies(pw_cookies)
+        await self._context.add_cookies(pw_cookies)  # type: ignore[arg-type]
         # Only inject once
         self._pending_cookies = {}
 

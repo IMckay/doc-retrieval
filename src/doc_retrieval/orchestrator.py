@@ -1,6 +1,7 @@
 """Main orchestrator that coordinates the extraction pipeline."""
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -146,6 +147,7 @@ class ExtractionResult:
         self.errors: list[tuple[str, str, ErrorCategory]] = []  # (url, msg, category)
         self.skipped: list[str] = []
         self.skipped_categories: list[str] = []
+        self.deduplicated_count: int = 0
         self.page_timings: list[PageTiming] = []
         self.pipeline_start: float = 0.0
         self.pipeline_end: float = 0.0
@@ -189,6 +191,10 @@ class Orchestrator:
             cache_dir = config.cache_dir or Path.home() / ".cache" / "doc-retrieval"
             self._cache = ResponseCache(cache_dir)
 
+        # Content-hash deduplication
+        self._content_hashes: dict[str, str] = {}  # hash -> canonical URL
+        self._content_hash_lock = asyncio.Lock()
+
         # Pipeline hooks
         self._pipeline = Pipeline.from_config(config.hooks) if config.hooks else Pipeline()
 
@@ -217,6 +223,7 @@ class Orchestrator:
         formatter = LLMFormatter(
             include_metadata=self.config.output.include_metadata,
             include_toc=self.config.output.include_toc,
+            markdown_cleanup_patterns=self.config.extractor.markdown_cleanup_patterns or None,
         )
 
         # Discover URLs first (to get count for progress bar)
@@ -545,6 +552,10 @@ class Orchestrator:
         if result.skipped_categories:
             self.console.print(
                 f"  Category pages:  [yellow]{len(result.skipped_categories)}[/yellow]"
+            )
+        if result.deduplicated_count:
+            self.console.print(
+                f"  Deduplicated:    [yellow]{result.deduplicated_count}[/yellow]"
             )
         self.console.print()
 
@@ -990,6 +1001,18 @@ class Orchestrator:
                 # post_convert hook
                 if self._pipeline.has_hooks(HookPoint.POST_CONVERT):
                     page = await self._pipeline.run_post_convert(effective_url, page)
+
+                # Content-hash deduplication
+                content_hash = hashlib.sha256(page.markdown.encode()).hexdigest()[:16]
+                async with self._content_hash_lock:
+                    canonical_url = self._content_hashes.get(content_hash)
+                    if canonical_url is not None:
+                        result.skipped.append(url)
+                        result.deduplicated_count += 1
+                        timing.status = PageStatus.SKIPPED
+                        self._save_page_state(url, "skipped")
+                        return
+                    self._content_hashes[content_hash] = url
 
                 if self._is_category_page(page):
                     result.skipped_categories.append(url)

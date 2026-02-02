@@ -56,6 +56,12 @@ class SitePattern(BaseModel):
     wait_selector: str | None = None
     wait_time_ms: int = 0
     click_tabs_selector: str | None = None
+    section_url_pattern: str | None = None
+    section_selector_template: str | None = None
+    section_url_patterns: list[str] = []
+    markdown_cleanup_patterns: list[str] = []
+
+    nav_selectors: list[str] = []
 
     detection_signals: list[DetectionSignal] = []
     phase1_signals: list[DetectionSignal] = []
@@ -87,6 +93,10 @@ DOCUSAURUS_PATTERN = SitePattern(
         '[class*="tocCollapsible"]',
         "footer",
     ],
+    nav_selectors=[
+        ".navbar__items > .navbar__item:not(.dropdown) > a",
+        ".dropdown__menu a",
+    ],
     requires_js=True,
     wait_selector="article.markdown",
     click_tabs_selector='.openapi-tabs__code-container [role="tab"]',
@@ -116,6 +126,7 @@ GITBOOK_PATTERN = SitePattern(
         ".page-footer",
         '[data-testid="page.tableOfContents"]',
     ],
+    nav_selectors=["nav[aria-label] a"],
     requires_js=True,
     wait_selector='[data-testid="page.contentEditor"], .markdown-section',
     phase1_signals=[
@@ -144,6 +155,7 @@ READTHEDOCS_PATTERN = SitePattern(
         ".headerlink",
         '[role="navigation"]',
     ],
+    nav_selectors=[".wy-nav-side .toctree-l1 > a"],
     requires_js=False,
     phase1_signals=[
         DetectionSignal(kind="url_substring", value="readthedocs", weight=25),
@@ -172,6 +184,10 @@ MKDOCS_PATTERN = SitePattern(
         ".md-footer",
         ".md-tabs",
         ".md-source",
+    ],
+    nav_selectors=[
+        ".md-tabs__link",
+        ".md-nav--primary > .md-nav__list > .md-nav__item > a",
     ],
     requires_js=False,
     wait_selector='[role="main"]',
@@ -278,6 +294,10 @@ VITEPRESS_PATTERN = SitePattern(
         ".edit-link",
         ".prev-next",
     ],
+    nav_selectors=[
+        ".VPNavBarMenu a",
+        ".VPSidebar .VPSidebarItem > a",
+    ],
     requires_js=True,
     wait_selector=".vp-doc",
     phase1_signals=[
@@ -310,6 +330,7 @@ MINTLIFY_PATTERN = SitePattern(
         '[class*="Pagination"]',
         '[class*="FeedbackButtons"]',
     ],
+    nav_selectors=["nav a[href]"],
     requires_js=True,
     wait_selector="#content-area, article",
     phase1_signals=[
@@ -340,6 +361,7 @@ NEXTRA_PATTERN = SitePattern(
         "footer",
         ".nx-mt-auto",
     ],
+    nav_selectors=["nav a[href]"],
     requires_js=True,
     wait_selector="article, .nextra-content",
     phase1_signals=[
@@ -408,8 +430,11 @@ REDOCLY_REALM_PATTERN = SitePattern(
     name="redocly-realm",
     description="Redocly Realm developer portals",
     content_selectors=[
-        "main",
+        ".redoc-wrap .api-content",
+        ".redoc-wrap",
+        "main article",
         "article",
+        "main",
         '[role="main"]',
     ],
     remove_selectors=[
@@ -420,14 +445,47 @@ REDOCLY_REALM_PATTERN = SitePattern(
         '[class*="Sidebar"]',
         '[class*="Navbar"]',
         '[class*="Footer"]',
-        '[class*="CopyForLlm"]',
         '[class*="Breadcrumb"]',
+        '[class*="PageActions__"]',
+        '[class*="PageActionsMenuItem__"]',
+        '[class*="Dropdown__"]',
+        '[class*="DropdownMenu__"]',
+        'button[class*="Copy"]',
+        '[class*="menu-content"]',
+        '[class*="MenuItems"]',
+        '[role="navigation"]',
+        '[class*="Rating__"]',
+        '[class*="PageNavigation__"]',
+        '[class*="DocumentationLayout__LayoutBottom"]',
     ],
-    requires_js=False,
-    wait_selector="main",
+    nav_selectors=["nav a[href]", "header a[href]"],
+    requires_js=True,
+    wait_selector=".redoc-wrap .api-content, main article",
+    wait_time_ms=1000,
+    section_url_pattern=r"/references/.+?/api\.[^/]+/(.+)$",
+    section_selector_template='[id="{section}"]',
+    section_url_patterns=[
+        r"/references/.+?/api\.[^/]+/(.+)$",
+        r"/guides/.+?/api(?:-[^/]+)?/(.+)$",
+    ],
+    markdown_cleanup_patterns=[
+        # FORMAT A: toolbar fused onto heading line
+        r"(?m)(^#{1,6}\s+.+?)\s+Copy\s+-\s+Copy for LLM\b.*$",
+        # FORMAT B: standalone toolbar block after heading
+        (
+            r"(?m)^Copy\n\n- Copy for LLM\n"
+            r"(?:\n\s+Copy page as Markdown[^\n]*\n)*"
+            r"(?:- \[(?:View as Markdown|Open in ChatGPT|Open in Claude)\b[^\n]*\n)*"
+            r"(?:- Connect to (?:Cursor|VS Code)\b[^\n]*\n)*"
+        ),
+        # "Was this page helpful?" section
+        r"(?m)^#{1,6}\s+Was this page helpful\?\s*$",
+    ],
     phase1_signals=[
         DetectionSignal(kind="html_substring", value="/runtime/browser-entry.js", weight=30),
-        DetectionSignal(kind="html_substring", value="-redocly-", weight=25, case_sensitive=False),
+        DetectionSignal(
+            kind="html_substring", value="-redocly-", weight=25, case_sensitive=False
+        ),
     ],
     phase2_checks=[],
 )
@@ -450,6 +508,7 @@ STARLIGHT_PATTERN = SitePattern(
         "footer",
         ".pagination-links",
     ],
+    nav_selectors=["nav.sidebar a"],
     requires_js=False,
     wait_selector=".sl-markdown-content",
     phase1_signals=[
@@ -556,6 +615,14 @@ class PatternRegistry:
             extractor_updates["content_selectors"] = pattern.content_selectors
         if pattern.remove_selectors:
             extractor_updates["remove_selectors"] = pattern.remove_selectors
+        if pattern.section_url_pattern and config.extractor.section_url_pattern is None:
+            extractor_updates["section_url_pattern"] = pattern.section_url_pattern
+        if pattern.section_selector_template and config.extractor.section_selector_template is None:
+            extractor_updates["section_selector_template"] = pattern.section_selector_template
+        if pattern.section_url_patterns and not config.extractor.section_url_patterns:
+            extractor_updates["section_url_patterns"] = pattern.section_url_patterns
+        if pattern.markdown_cleanup_patterns:
+            extractor_updates["markdown_cleanup_patterns"] = pattern.markdown_cleanup_patterns
 
         updates: dict = {}
         if fetcher_updates:

@@ -33,7 +33,7 @@ class JsCrawlerDiscoverer(BaseDiscoverer):
         max_pages = self.config.max_pages
         max_depth = self.config.max_depth
 
-        async with (await async_playwright().start()) as pw:
+        async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
             try:
                 context = await browser.new_context(

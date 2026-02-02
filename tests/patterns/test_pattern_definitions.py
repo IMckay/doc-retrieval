@@ -80,3 +80,49 @@ class TestPatternDefinitions:
         p = PatternRegistry.get(name)
         assert p is not None
         assert len(p.description) > 0
+
+    def test_redocly_realm_requires_js(self):
+        p = PatternRegistry.get("redocly-realm")
+        assert p is not None
+        assert p.requires_js is True
+
+    def test_redocly_realm_has_api_content_selector(self):
+        p = PatternRegistry.get("redocly-realm")
+        assert p is not None
+        assert ".redoc-wrap .api-content" in p.content_selectors
+
+    def test_redocly_realm_has_section_fields(self):
+        p = PatternRegistry.get("redocly-realm")
+        assert p is not None
+        assert p.section_url_pattern is not None
+        assert p.section_selector_template is not None
+
+    def test_redocly_realm_removes_page_actions_toolbar(self):
+        p = PatternRegistry.get("redocly-realm")
+        assert p is not None
+        # Should have PageActions__ selectors (not old CopyForLlm)
+        pa_selectors = [s for s in p.remove_selectors if "PageActions__" in s]
+        assert len(pa_selectors) >= 1
+        # Should not have old CopyForLlm selectors
+        old_selectors = [s for s in p.remove_selectors if "CopyForLlm" in s]
+        assert len(old_selectors) == 0
+
+    def test_redocly_realm_removes_rating(self):
+        p = PatternRegistry.get("redocly-realm")
+        assert p is not None
+        rating_selectors = [s for s in p.remove_selectors if "Rating__" in s]
+        assert len(rating_selectors) >= 1
+
+    def test_redocly_realm_has_markdown_cleanup_patterns(self):
+        p = PatternRegistry.get("redocly-realm")
+        assert p is not None
+        assert len(p.markdown_cleanup_patterns) >= 2
+
+    def test_redocly_realm_has_section_url_patterns(self):
+        p = PatternRegistry.get("redocly-realm")
+        assert p is not None
+        assert len(p.section_url_patterns) >= 2
+        # Should cover both /references/ and /guides/ paths
+        patterns_joined = " ".join(p.section_url_patterns)
+        assert "references" in patterns_joined
+        assert "guides" in patterns_joined
