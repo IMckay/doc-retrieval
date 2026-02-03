@@ -974,6 +974,41 @@ class InteractiveExtractor:
         if len(urls) > limit:
             self.console.print(f"  [dim]... and {len(urls) - limit} more[/dim]")
 
+    def _extract_url_category(self, url: str, max_len: int = 30) -> str:
+        """Extract a category/section name from URL path for display.
+
+        Examples:
+            https://example.com/docs/api/auth → docs/api/auth
+            https://example.com/help/en/articles/123-title → articles
+            https://example.com/ → /
+        """
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        path = parsed.path.strip("/")
+
+        if not path:
+            return "/"
+
+        # Split path and take meaningful segments
+        segments = path.split("/")
+
+        # Skip common prefixes like language codes
+        skip_prefixes = {"en", "es", "de", "fr", "ja", "zh", "pt", "docs", "help"}
+        filtered = [s for s in segments if s.lower() not in skip_prefixes]
+
+        if not filtered:
+            filtered = segments  # Fall back to original if all filtered out
+
+        # Take first 1-2 meaningful segments
+        category = "/".join(filtered[:2])
+
+        # Truncate if too long
+        if len(category) > max_len:
+            category = category[: max_len - 1] + "…"
+
+        return category
+
     # ------------------------------------------------------------------
     # Section scanning & selection
     # ------------------------------------------------------------------
@@ -1666,14 +1701,53 @@ class InteractiveExtractor:
         )
         discoverer = CrawlerDiscoverer(url, config)
 
-        urls = []
+        urls: list[DiscoveredURL] = []
         crawl_start = _time.monotonic()
+        current_depth = 0
+        depth_categories: set[str] = set()
+        depth_start_count = 0
+
         with self.console.status("Crawling...") as status:
             async for discovered in discoverer.discover():
                 urls.append(discovered)
+
+                # Track when we move to a new depth level
+                if discovered.depth > current_depth:
+                    # Print summary of completed depth
+                    if depth_categories:
+                        cats = ", ".join(sorted(depth_categories)[:5])
+                        if len(depth_categories) > 5:
+                            cats += f" (+{len(depth_categories) - 5} more)"
+                        depth_count = len(urls) - 1 - depth_start_count
+                        self.console.print(
+                            f"  [dim]Depth {current_depth}:[/dim] "
+                            f"{depth_count} pages — {cats}"
+                        )
+                    current_depth = discovered.depth
+                    depth_categories = set()
+                    depth_start_count = len(urls) - 1
+
+                # Collect categories at this depth
+                category = self._extract_url_category(discovered.url)
+                depth_categories.add(category)
+
                 elapsed = _time.monotonic() - crawl_start
                 rate = len(urls) / elapsed if elapsed > 0 else 0
-                status.update(f"Crawling... found {len(urls)} pages ({rate:.1f}/sec)")
+                status.update(
+                    f"Crawling depth {current_depth}... "
+                    f"found {len(urls)} pages ({rate:.1f}/sec)"
+                )
+
+        # Print final depth summary
+        if depth_categories:
+            cats = ", ".join(sorted(depth_categories)[:5])
+            if len(depth_categories) > 5:
+                cats += f" (+{len(depth_categories) - 5} more)"
+            depth_count = len(urls) - depth_start_count
+            self.console.print(
+                f"  [dim]Depth {current_depth}:[/dim] "
+                f"{depth_count} pages — {cats}"
+            )
 
         self.console.print(f"  [green]Found {len(urls)} pages via crawling[/green]")
         return DiscoveryMode.CRAWL, urls

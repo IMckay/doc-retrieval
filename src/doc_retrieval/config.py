@@ -37,6 +37,7 @@ class DiscoveryConfig(BaseModel):
     mode: DiscoveryMode = DiscoveryMode.SITEMAP
     max_depth: int = Field(default=3, ge=1, le=10)
     max_pages: int = Field(default=0, ge=0)  # 0 = unlimited
+    max_concurrent_discovery: int = Field(default=10, ge=1, le=50)
     include_pattern: str | None = None
     exclude_pattern: str | None = None
     urls_file: Path | None = None

@@ -521,6 +521,38 @@ STARLIGHT_PATTERN = SitePattern(
     ],
 )
 
+INTERCOM_HELP_PATTERN = SitePattern(
+    name="intercom-help",
+    description="Intercom Help Center sites",
+    content_selectors=[
+        "article",
+        "main",
+    ],
+    remove_selectors=[
+        "header",
+        "nav",
+        "footer",
+        ".table-of-contents",
+        '[class*="table-of-contents"]',
+        '[class*="relatedArticles"]',
+        '[class*="related-articles"]',
+        '[class*="feedback"]',
+        '[class*="Feedback"]',
+        '[aria-label="Language selector"]',
+        ".intercom-lightweight-app",
+    ],
+    nav_selectors=["nav a[href]"],
+    requires_js=False,
+    phase1_signals=[
+        DetectionSignal(kind="html_substring", value="widget.intercom.io", weight=40),
+        DetectionSignal(kind="html_substring", value="intercom-interblocks", weight=30),
+        DetectionSignal(kind="url_substring", value="/help/", weight=15),
+    ],
+    phase2_checks=[
+        Phase2Check(kind="css_present", value="article", weight=15),
+    ],
+)
+
 
 CONFIDENCE_NORMALIZER = 100
 
@@ -572,6 +604,7 @@ class PatternRegistry:
         "redoc": REDOC_PATTERN,
         "redocly-realm": REDOCLY_REALM_PATTERN,
         "starlight": STARLIGHT_PATTERN,
+        "intercom-help": INTERCOM_HELP_PATTERN,
     }
 
     @classmethod
